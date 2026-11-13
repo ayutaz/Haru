@@ -50,6 +50,38 @@ All three read the same checkpoint,
 
 ## Quick start
 
+### Windows with uv
+
+From the repository root, use the local Python 3.12 environment managed by
+`pyproject.toml` and `uv.lock`:
+
+```powershell
+uv sync --locked
+uv run python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))"
+uv run haru-server --device cuda --language ja --network-profile local --codec-backend torch --webrtc off
+```
+
+The root project targets Windows x64 and selects CUDA 12.8 PyTorch wheels.
+It installs `./haru` as a local path dependency. Manage additional packages with
+`uv add <package>` (or `uv add --dev <package>` for development tools); restore
+the locked environment with `uv sync --locked`. Run commands from the repository
+root so uv uses this environment.
+
+The first server launch downloads about 10.5 GB of model weights. Make about
+12 GB of GPU memory available before starting. Open <http://localhost:8998>
+and upload a 3-second to 3-minute WAV or FLAC voice clip. On Windows, browser
+recordings that require ffmpeg currently hit a temporary-file sharing issue;
+use WAV or FLAC uploads until that path is fixed.
+
+The built web client is included; no Node.js build is needed. To run the
+existing tests without downloading the model:
+
+```powershell
+uv run pytest -c haru/pyproject.toml haru/tests -m "not gpu" -q
+```
+
+### Other environments
+
 With an NVIDIA GPU (about 12 GB of memory):
 
 ```bash
