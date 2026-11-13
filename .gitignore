@@ -8,6 +8,9 @@ build/
 .pytest_cache/
 .DS_Store
 
+# Local article drafts, research notes, and article assets.
+/articles/
+
 # Voice clips are not distributed: users bring their own (see README).
 haru/haru/assets/voices/
 haru_mlx/haru_mlx/assets/voices/
