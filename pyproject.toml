@@ -1,0 +1,27 @@
+[project]
+name = "haru-local"
+version = "0.1.0"
+description = "Local CUDA environment for the Haru web demo"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "haru-speech",
+    "torch>=2.6",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+haru-speech = { path = "haru" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
