@@ -80,3 +80,16 @@ def test_future_frame_cannot_change_earlier_hidden_state():
     data['model_latents'][0, -1] += 100
     after = training_losses(model, data, seed=7)['hidden']
     torch.testing.assert_close(before[0, :-1], after[0, :-1])
+
+
+def test_configured_guidance_range_is_used_by_the_real_forward(monkeypatch):
+    import haru_training.model as module
+    seen=[]
+    original=module.meanflow_loss
+    def checked(field,data,noise,time,interval,guidance,*args,**kwargs):
+        seen.append(guidance.detach())
+        return original(field,data,noise,time,interval,guidance,*args,**kwargs)
+    monkeypatch.setattr(module,'meanflow_loss',checked)
+    model=tiny_model();configure_trainable(model,TrainingConfig())
+    training_losses(model,batch(),seed=7,guidance_max=1.)
+    assert seen and all((v==1).all() for v in seen)

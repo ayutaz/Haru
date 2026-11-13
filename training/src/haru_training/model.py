@@ -15,9 +15,10 @@ class HeadField:
         return self.head.velocity(z.to(dtype), projected, time, interval, guidance).float()
 
 
-def training_losses(model, batch: dict, *, seed: int = 0, condition_dropout: float = .1) -> dict:
-    if not 0 <= condition_dropout < 1:
-        raise ValueError('condition dropout must be within [0, 1)')
+def training_losses(model, batch: dict, *, seed: int = 0, condition_dropout: float = .1,
+                    guidance_max: float = 2.) -> dict:
+    if not 0 <= condition_dropout < 1 or not 1 <= guidance_max <= 2:
+        raise ValueError('condition dropout or guidance is outside its supported range')
     device = model.device
     values = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
     audio_mask = values['audio_loss_mask'] & values['attention_mask']
@@ -33,7 +34,7 @@ def training_losses(model, batch: dict, *, seed: int = 0, condition_dropout: flo
     generator = torch.Generator(device=device).manual_seed(seed)
     noise = torch.randn(targets.shape, device=device, dtype=torch.float32, generator=generator)
     time, interval = sample_flow_times(len(targets), generator, device)
-    guidance = 1 + torch.rand(len(targets), device=device, generator=generator)
+    guidance = 1 + (guidance_max-1)*torch.rand(len(targets), device=device, generator=generator)
     dropped = torch.rand(len(targets), device=device, generator=generator) < condition_dropout
     flow = meanflow_loss(HeadField(model.head), targets, noise, time, interval, guidance, conditions,
                          drop_mask=dropped)
