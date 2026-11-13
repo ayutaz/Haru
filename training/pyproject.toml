@@ -1,0 +1,41 @@
+[project]
+name = "haru-training"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "haru-speech",
+    "numpy>=2.5.4",
+    "peft>=0.21.3",
+    "scipy>=1.18.1",
+    "soundfile>=0.14.0",
+    "torch==2.11.0",
+]
+
+[tool.uv]
+package = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+haru-speech = { path = "../haru" }
+torch = { index = "pytorch-cu128" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "../haru"]
+markers = ["cuda: requires CUDA on an explicitly provisioned vast.ai instance"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

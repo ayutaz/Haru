@@ -95,13 +95,19 @@ class MeanFlowHead(nn.Module):
         self.final = FinalLayer(hidden, config.latent_dim, config.norm_eps)
 
     def velocity(
-        self, z: torch.Tensor, cond: torch.Tensor, t: float, h: float, guidance: torch.Tensor
+        self, z: torch.Tensor, cond: torch.Tensor, t: float | torch.Tensor,
+        h: float | torch.Tensor, guidance: torch.Tensor
     ) -> torch.Tensor:
         """``z [B, D]``, projected condition ``cond [B, H]``, ``guidance [B]`` float32."""
         batch, dtype = z.shape[0], z.dtype
 
-        def scalar(value: float) -> torch.Tensor:
-            return torch.full((batch,), value, device=z.device, dtype=dtype)
+        def scalar(value: float | torch.Tensor) -> torch.Tensor:
+            value = torch.as_tensor(value, device=z.device, dtype=dtype)
+            if value.ndim == 0:
+                return value.expand(batch)
+            if value.shape != (batch,):
+                raise ValueError("time and interval need one value per batch row")
+            return value
 
         c = cond + self.t_embed(scalar(t))
         c = c + self.dt_embed(scalar(self.config.interval_embed))
