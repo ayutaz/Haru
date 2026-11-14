@@ -263,6 +263,7 @@ class Trainer:
             restore_rng(rng)
         metrics = dict(zip(('text_loss', 'audio_loss'),
                            (total/max(1, n) for total, n in zip(totals, counts))))
+        metrics.update(text_count=counts[0], audio_count=counts[1])
         self._event('validation', **metrics)
         return metrics
 
