@@ -1,6 +1,7 @@
 """Explicitly timed stereo dialogue ingestion; technical QC is not listening QC."""
 
 from hashlib import sha256
+from io import BytesIO
 import math
 from pathlib import Path
 import re
@@ -44,8 +45,8 @@ def _timeline(row, seconds):
     return by_speaker
 
 
-def inspect_dialogue(row, root):
-    """Verify bytes, PCM, channel roles and timeline, without GPU or downloads.
+def load_dialogue(row, root):
+    """Decode authenticated bytes with channel roles and timing, without GPU.
 
     Usage permission and perceptual voice/pronunciation quality remain external
     review gates; this function never certifies those from manifest assertions.
@@ -59,9 +60,12 @@ def inspect_dialogue(row, root):
         raise ValueError('audio path escapes dialogue root')
     if not re.fullmatch('[a-f0-9]{64}', row.get('sha256', '')):
         raise ValueError('source requires a SHA-256')
-    if not path.is_file() or sha256(path.read_bytes()).hexdigest() != row['sha256']:
+    if not path.is_file():
+        raise ValueError('missing source audio')
+    payload = path.read_bytes()
+    if sha256(payload).hexdigest() != row['sha256']:
         raise ValueError('missing or changed source audio')
-    audio, rate = sf.read(path, dtype='float32', always_2d=True)
+    audio, rate = sf.read(BytesIO(payload), dtype='float32', always_2d=True)
     if (rate != 24000 or audio.shape[1] != 2 or not len(audio)
             or not np.isfinite(audio).all() or np.max(np.abs(audio)) > 1):
         raise ValueError('dialogue requires finite nonempty 24 kHz stereo PCM within [-1,1]')
@@ -74,11 +78,15 @@ def inspect_dialogue(row, root):
                 raise ValueError('annotated speaker turn is silent')
     overlap = sum(max(0., min(a1, b1)-max(a0, b0))
                   for a0, a1 in spans['model'] for b0, b1 in spans['user'])
-    return {'id': row['id'], 'sample_rate': rate, 'samples': len(audio),
+    return audio, {'id': row['id'], 'sample_rate': rate, 'samples': len(audio),
         'frames': math.ceil(len(audio)/3200), 'overlap_seconds': overlap,
         'audio_sha256': sha256(np.ascontiguousarray(audio).tobytes()).hexdigest(),
         'source_sha256': row['sha256'], 'technical_qc': 'passed',
         'perceptual_quality': 'unverified', 'usage_permission': 'unverified'}
+
+
+def inspect_dialogue(row, root):
+    return load_dialogue(row, root)[1]
 
 
 def validate_cohort(rows, root, *, protected_source_ids):
