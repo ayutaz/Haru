@@ -44,8 +44,11 @@ class RunSpec:
     condition_dropout: float = .1
     guidance_max: float = 2.
     schema_version: int = 1
+    optimizer_precision: str = 'native'
 
     def __post_init__(self):
+        if self.optimizer_precision not in ('native','fp32_master'):
+            raise ValueError('invalid optimizer precision')
         positive = ('max_steps', 'micro_batch_size', 'accumulation_steps',
                     'validation_interval', 'max_seconds')
         nonnegative = ('warmup_steps', 'checkpoint_interval', 'seed')
@@ -92,6 +95,13 @@ def dataset_fingerprint(records):
     return digest.hexdigest()
 
 
+def _optimizer(parameters,spec):
+    if spec.optimizer_precision=='fp32_master':
+        from .optim import MasterAdamW
+        return MasterAdamW(parameters,lr=spec.learning_rate,weight_decay=spec.weight_decay)
+    return torch.optim.AdamW(parameters,lr=spec.learning_rate,weight_decay=spec.weight_decay)
+
+
 class Trainer:
     def __init__(self, model, train, validation, spec: RunSpec, output: Path,
                  *, collate_fn=None, loss_fn=training_losses):
@@ -114,7 +124,7 @@ class Trainer:
         selected = [p for p in model.parameters() if p.requires_grad]
         if not selected:
             raise ValueError('model has no trainable parameters')
-        self.optimizer = torch.optim.AdamW(selected, lr=spec.learning_rate, weight_decay=spec.weight_decay)
+        self.optimizer = _optimizer(selected,spec)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer,
             lambda step: min(1., (step+1)/max(1, spec.warmup_steps)))
         self.state = Progress()
@@ -159,7 +169,7 @@ class Trainer:
         if self._in_step: raise RuntimeError('resume requires an optimizer-step boundary')
         self._check_data()
         bundle = read_checkpoint(path)
-        if (bundle.get('version') != 1 or bundle.get('spec') != asdict(self.spec)
+        if (bundle.get('version') != 1 or asdict(RunSpec(**bundle.get('spec',{}))) != asdict(self.spec)
                 or bundle.get('signature') != self._signature()
                 or bundle.get('frozen_sha256') != self._frozen_digest()
                 or bundle.get('torch_version') != str(torch.__version__)):
@@ -187,14 +197,15 @@ class Trainer:
                     raise ValueError('checkpoint tensor shape, dtype or values are invalid')
         validate_rng(bundle['rng'], self.model)
         # Validate optimizer/scheduler before copying any model weights.
-        optimizer = torch.optim.AdamW(list(selected.values()), lr=self.spec.learning_rate,
-                                      weight_decay=self.spec.weight_decay)
+        optimizer = _optimizer(list(selected.values()),self.spec)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
             lambda step:min(1.,(step+1)/max(1,self.spec.warmup_steps)))
         optimizer.load_state_dict(bundle['optimizer'])
         scheduler.load_state_dict(bundle['scheduler'])
         for parameter, state in optimizer.state.items():
-            if set(state) != {'step','exp_avg','exp_avg_sq'}:
+            expected_keys={'step','exp_avg','exp_avg_sq'}
+            if self.spec.optimizer_precision=='fp32_master': expected_keys.add('master_param')
+            if set(state) != expected_keys:
                 raise ValueError('checkpoint optimizer state is unsupported')
             for key in ('exp_avg','exp_avg_sq'):
                 value = state[key]
@@ -203,6 +214,11 @@ class Trainer:
             step = state['step']
             if step.ndim != 0 or not torch.isfinite(step) or not 0 < float(step) <= progress.step:
                 raise ValueError('checkpoint optimizer step is invalid')
+        if self.spec.optimizer_precision=='fp32_master':
+            for name,parameter in selected.items():
+                state=optimizer.state.get(parameter)
+                if state and not torch.equal(state['master_param'].to(dtype=parameter.dtype).cpu(),bundle['model'][name]):
+                    raise ValueError('checkpoint master weight differs from saved model weight')
         if scheduler.last_epoch != progress.step:
             raise ValueError('checkpoint scheduler step differs from training progress')
         with torch.no_grad():

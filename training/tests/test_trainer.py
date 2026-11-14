@@ -67,6 +67,57 @@ def test_dataset_identity_detects_changed_content_and_order():
     assert before != dataset_fingerprint(first)
 
 
+def test_fp32_master_training_resume_preserves_sub_bfloat16_updates(tmp_path):
+    def make(path):
+        train,val=records(),records('val')
+        return Trainer(Regression().to(dtype=torch.bfloat16),train,val,
+            spec(train,val,learning_rate=1e-6,optimizer_precision='fp32_master'),path,
+            collate_fn=collate,loss_fn=objective)
+    plain=make(tmp_path/'plain');plain.fit()
+    staged=make(tmp_path/'staged');staged.fit(until_step=1)
+    checkpoint=staged.save()
+    resumed=make(tmp_path/'resumed');resumed.resume(checkpoint);resumed.fit()
+    assert torch.equal(plain.model.weight,resumed.model.weight)
+    first=plain.optimizer.state[plain.model.weight]
+    second=resumed.optimizer.state[resumed.model.weight]
+    for key in ('step','master_param','exp_avg','exp_avg_sq'):
+        torch.testing.assert_close(first[key],second[key],atol=0,rtol=0)
+    assert not torch.equal(first['master_param'],plain.model.weight.detach().float())
+    assert first['exp_avg'].dtype==torch.float32
+
+
+def test_inconsistent_master_weight_is_rejected_before_model_copy(tmp_path):
+    from haru_training.checkpoint import read_checkpoint,write_checkpoint
+    train,val=records(),records('val')
+    settings=spec(train,val,learning_rate=1e-6,optimizer_precision='fp32_master')
+    def make(path):
+        return Trainer(Regression().to(dtype=torch.bfloat16),train,val,settings,path,
+                       collate_fn=collate,loss_fn=objective)
+    original=make(tmp_path/'original');original.fit(until_step=1)
+    state=read_checkpoint(original.save())
+    state['optimizer']['state'][0]['master_param'].add_(1)
+    bad=write_checkpoint(tmp_path/'bad',state)
+    target=make(tmp_path/'target')
+    before=target.model.weight.detach().clone()
+    with pytest.raises(ValueError,match='master'):
+        target.resume(bad)
+    assert torch.equal(before,target.model.weight)
+
+
+def test_legacy_native_optimizer_spec_remains_readable(tmp_path):
+    from haru_training.checkpoint import read_checkpoint,write_checkpoint
+    train,val=records(),records('val')
+    settings=spec(train,val,learning_rate=.01)
+    original=Trainer(Regression(),train,val,settings,tmp_path/'old',collate_fn=collate,loss_fn=objective)
+    original.fit(until_step=1)
+    bundle=read_checkpoint(original.save())
+    bundle['spec'].pop('optimizer_precision')
+    legacy=write_checkpoint(tmp_path/'legacy',bundle)
+    fresh=Trainer(Regression(),train,val,settings,tmp_path/'new',collate_fn=collate,loss_fn=objective)
+    fresh.resume(legacy)
+    assert fresh.state.step==1 and torch.equal(original.model.weight,fresh.model.weight)
+
+
 def test_validation_subset_is_heldout_and_preserves_rng_modes_and_data(tmp_path):
     trainer = build(tmp_path)
     trainer.model.train()
