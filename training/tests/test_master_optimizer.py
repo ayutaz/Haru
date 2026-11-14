@@ -71,3 +71,26 @@ def test_master_optimizer_skips_missing_gradients_and_rejects_closures():
     assert torch.equal(second,before) and not optimizer.state[second]
     with pytest.raises(ValueError,match='closure'):
         optimizer.step(lambda:None)
+
+
+@pytest.mark.cuda
+def test_cuda_master_resume_preserves_fp32_state_from_cpu_checkpoint(tmp_path):
+    import os
+    from haru_training.optim import MasterAdamW
+    from haru_training.checkpoint import read_checkpoint,write_checkpoint
+    assert os.environ.get('HARU_COMPUTE_PROVIDER')=='vast.ai'
+    assert torch.cuda.is_available(), 'CUDA is mandatory'
+    parameter=torch.nn.Parameter(torch.tensor([.1,-.2],dtype=torch.bfloat16,device='cuda'))
+    optimizer=MasterAdamW([parameter],lr=1e-6,weight_decay=0)
+    for _ in range(3):
+        parameter.grad=torch.ones_like(parameter);optimizer.step()
+    path=write_checkpoint(tmp_path/'state',{'parameter':parameter,'optimizer':optimizer.state_dict()})
+    state=read_checkpoint(path)
+    copied=torch.nn.Parameter(state['parameter'].to('cuda'))
+    resumed=MasterAdamW([copied],lr=1e-6,weight_decay=0)
+    resumed.load_state_dict(state['optimizer'])
+    parameter.grad=torch.ones_like(parameter);copied.grad=torch.ones_like(copied)
+    optimizer.step();resumed.step()
+    assert torch.equal(parameter,copied)
+    for key in ('master_param','exp_avg','exp_avg_sq','step'):
+        torch.testing.assert_close(optimizer.state[parameter][key],resumed.state[copied][key],atol=0,rtol=0)
