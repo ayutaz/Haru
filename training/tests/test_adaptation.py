@@ -55,6 +55,30 @@ def test_rejected_response_stops_before_any_update_and_cannot_be_candidate(tmp_p
     assert result['stopped_for_quality'] and not result['completed_epoch']
 
 
+def test_early_observation_schedule_stops_at_first_rejected_update(tmp_path,monkeypatch):
+    import haru_training.adaptation as runner
+    trainer=trainer_at(tmp_path/'out/trainer')
+    monkeypatch.setattr(runner,'export_inference',lambda *args:None)
+    def generate(model,path):
+        path.mkdir()
+        return {'probe':{'audio':np.ones(3200),'text':'今日は晴れです'}}
+    result=runner.run_adaptation(trainer,tmp_path/'out',generate,
+        speech_ids=['val-0','val-2'],dialogue_ids=['val-1'],observation_steps=[0,1,3],
+        boundary_review=lambda row:{'accepted':row['step']==0,'reason':'first update lost input topic'})
+    assert result['steps']==1 and [r['step'] for r in result['observations']]==[0,1]
+    assert result['candidate_step'] is None
+
+
+@pytest.mark.parametrize('schedule',[[0,2],[1,3],[0,1,1,3],[0,True,3],[0,4,3]])
+def test_invalid_observation_schedule_fails_before_output(tmp_path,schedule):
+    from haru_training.adaptation import run_adaptation
+    trainer=trainer_at(tmp_path/'trainer')
+    with pytest.raises(ValueError,match='schedule'):
+        run_adaptation(trainer,tmp_path/'out',None,speech_ids=['val-0','val-2'],
+            dialogue_ids=['val-1'],observation_steps=schedule)
+    assert not (tmp_path/'out').exists()
+
+
 def test_bad_intermediate_response_is_preserved_and_not_extended(tmp_path, monkeypatch):
     import haru_training.adaptation as runner
     trainer=trainer_at(tmp_path/'out/trainer')

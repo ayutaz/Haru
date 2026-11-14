@@ -23,7 +23,7 @@ SELECTION_POLICY = {'speech_text_increase_max': .2,
 
 
 def run_adaptation(trainer, destination, generate, *, speech_ids, dialogue_ids, interval=8,
-                   boundary_review=None):
+                   boundary_review=None,observation_steps=None):
     """Save step zero and every observation; consume at most one full epoch.
 
     Rendering is frozen, but checkpoint/export occurs after gradient flags and
@@ -33,6 +33,8 @@ def run_adaptation(trainer, destination, generate, *, speech_ids, dialogue_ids, 
     must return {'accepted': bool, 'reason': nonempty str} before more updates.
     It may block for external inspection. Pending/invalid reviews never permit
     training; acceptance does not override the automatic rejection rules.
+    observation_steps may give an explicit increasing schedule from zero to the
+    epoch's final step, allowing early review without exporting every update.
     """
     speech_ids, dialogue_ids = list(speech_ids), list(dialogue_ids)
     combined = speech_ids+dialogue_ids
@@ -45,10 +47,16 @@ def run_adaptation(trainer, destination, generate, *, speech_ids, dialogue_ids, 
         raise ValueError('adaptation requires a fresh trainer bounded to one epoch')
     if type(interval) is not int or interval<=0 or trainer.spec.checkpoint_interval:
         raise ValueError('observation interval must be positive; this runner owns checkpoints')
+    schedule=list(observation_steps) if observation_steps is not None else None
+    if schedule is not None and (not schedule or any(type(step) is not int for step in schedule)
+            or schedule[0]!=0 or schedule[-1]!=trainer.spec.max_steps
+            or any(a>=b for a,b in zip(schedule,schedule[1:]))):
+        raise ValueError('observation schedule must increase from zero to the final epoch step')
     root=Path(destination)
     root.mkdir(parents=True,exist_ok=False)
     _json(root/'spec.json',asdict(trainer.spec))
     _json(root/'selection-policy.json',SELECTION_POLICY)
+    if schedule is not None: _json(root/'observation-schedule.json',schedule)
     observations=[]
     stopped=False
     while True:
@@ -85,7 +93,8 @@ def run_adaptation(trainer, destination, generate, *, speech_ids, dialogue_ids, 
         observations.append(row)
         if stopped or step==trainer.spec.max_steps:
             break
-        trainer.fit(until_step=min(step+interval,trainer.spec.max_steps))
+        next_step=next(value for value in schedule if value>step) if schedule is not None else min(step+interval,trainer.spec.max_steps)
+        trainer.fit(until_step=next_step)
         if trainer.state.step==step:
             break
     base=observations[0]['metrics']
