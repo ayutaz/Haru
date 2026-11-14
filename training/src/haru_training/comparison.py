@@ -29,3 +29,31 @@ def compare_outputs(first, second, policy):
     return {'passed': errors['tokens'] and all(errors[k] <= policy[k] for k in ('audio', 'logits', 'latent')),
             'max_absolute_errors': {k: errors[k] for k in ('audio', 'logits', 'latent')},
             'tokens_equal': errors['tokens'], 'policy': dict(policy)}
+
+
+def compare_waveforms(first, second):
+    """Compare decoded samples exactly, retaining file hashes separately.
+
+    WAV metadata such as the PEAK timestamp can change even when its waveform
+    does not. A rate/shape mismatch or nonfinite/non-mono signal is rejected;
+    every finite sample must still match with zero numerical tolerance.
+    """
+    from hashlib import sha256
+    import io
+
+    import soundfile as sf
+
+    a, first_rate = sf.read(io.BytesIO(first), dtype='float64')
+    b, second_rate = sf.read(io.BytesIO(second), dtype='float64')
+    if (a.ndim != 1 or b.shape != a.shape or not a.size or first_rate != second_rate
+            or not np.isfinite(a).all() or not np.isfinite(b).all()):
+        raise ValueError('waveform comparison requires matching-rate finite nonempty mono samples')
+    def pcm_hash(value):
+        canonical = value.astype('<f8', copy=True)
+        canonical[canonical == 0] = 0.  # Signed zero has the same amplitude.
+        return sha256(str(first_rate).encode() + b'\0' + canonical.tobytes()).hexdigest()
+    return {'passed': bool(np.array_equal(a, b)), 'max_absolute_error': float(np.max(np.abs(a-b))),
+            'sample_rate': first_rate, 'samples': len(a),
+            'file_bytes_equal': first == second,
+            'first_file_sha256': sha256(first).hexdigest(), 'second_file_sha256': sha256(second).hexdigest(),
+            'first_pcm_sha256': pcm_hash(a), 'second_pcm_sha256': pcm_hash(b)}

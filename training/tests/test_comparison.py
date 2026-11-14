@@ -37,3 +37,33 @@ def test_nondeterministic_baseline_tokens_require_investigation():
     changed = output()
     changed['tokens'][0] = 5
     with pytest.raises(ValueError): measure_repeatability(output(), changed)
+
+
+def wav_payload(values, rate=24000):
+    import io
+    import soundfile as sf
+    stream=io.BytesIO()
+    sf.write(stream,np.asarray(values,dtype=np.float32),rate,format='WAV',subtype='FLOAT')
+    return stream.getvalue()
+
+
+def test_waveform_parity_ignores_container_metadata_but_not_pcm_changes():
+    import struct
+    from haru_training.comparison import compare_waveforms
+    original=wav_payload([0.,.25,-.125])
+    changed=bytearray(original[:12]+b'JUNK'+struct.pack('<I',4)+b'abcd'+original[12:])
+    struct.pack_into('<I',changed,4,len(changed)-8)
+    result=compare_waveforms(original,bytes(changed))
+    assert result['passed'] and not result['file_bytes_equal']
+    assert result['first_pcm_sha256']==result['second_pcm_sha256']
+    assert result['max_absolute_error']==0 and result['samples']==3
+    mismatch=compare_waveforms(original,wav_payload([0.,.250001,-.125]))
+    assert not mismatch['passed'] and mismatch['max_absolute_error']>0
+
+
+@pytest.mark.parametrize('other',[
+    wav_payload([.1,.2],16000),wav_payload([.1]),wav_payload([float('nan'),.2]),
+    wav_payload([[.1,.2],[.1,.2]])],ids=['rate','length','nonfinite','stereo'])
+def test_waveform_parity_rejects_invalid_or_differently_shaped_audio(other):
+    from haru_training.comparison import compare_waveforms
+    with pytest.raises(ValueError): compare_waveforms(wav_payload([.1,.2]),other)
