@@ -30,7 +30,7 @@ def codec_digest(codec):
 
 def _validate(bundle):
     try:
-        if bundle['kind']!='haru-codec-adapter' or bundle['version']!=1:
+        if bundle['kind']!='haru-codec-adapter' or bundle['version']!=2:
             raise ValueError('unsupported codec adapter artifact')
         spec=bundle['spec'];config=spec['codec_config'];rank=spec['rank']
         if (not re.fullmatch(r'[\w.-]+/[\w.-]+',spec['base_model'])
@@ -38,7 +38,7 @@ def _validate(bundle):
                 or not re.fullmatch('[a-f0-9]{64}',spec['dataset_sha256'])
                 or not re.fullmatch('[a-f0-9]{64}',bundle['codec_sha256'])
                 or not isinstance(spec['target_speaker'],str) or not spec['target_speaker']
-                or spec['backend']!='torch' or spec['dtype'] not in DTYPES
+                or spec['backend']!='torch' or spec['dtype'] not in DTYPES or spec['model_dtype'] not in DTYPES
                 or config_digest(config)!=bundle['config_sha256']):
             raise ValueError('invalid codec adapter identity')
         channels=config['base_channels']<<len(config['ratios'])
@@ -64,10 +64,11 @@ def adapter_bundle(model,*,base_model,base_revision,target_speaker,dataset_sha25
            if not name.startswith('codec.decoder.stem.adapter.')):
         raise ValueError('parameters outside the codec adapter are trainable')
     config=asdict(model.codec.config)
-    bundle=dict(kind='haru-codec-adapter',version=1,
+    bundle=dict(kind='haru-codec-adapter',version=2,
                 spec=dict(base_model=base_model,base_revision=base_revision,target_speaker=target_speaker,
                           dataset_sha256=dataset_sha256,rank=adapter.rank,codec_config=config,
-                          backend='torch',dtype=str(model.codec.dtype).removeprefix('torch.')),
+                          backend='torch',dtype=str(model.codec.dtype).removeprefix('torch.'),
+                          model_dtype=str(getattr(model,'dtype',model.codec.dtype)).removeprefix('torch.')),
                 config_sha256=config_digest(config),codec_sha256=codec_digest(model.codec),
                 weights={key:value.detach().cpu().clone() for key,value in adapter.state_dict().items()})
     _validate(bundle)
@@ -83,6 +84,7 @@ def _apply(model,bundle,*,base_model,base_revision):
     if (spec['base_model']!=base_model or spec['base_revision']!=base_revision
             or config_digest(asdict(model.codec.config))!=bundle['config_sha256']
             or model.codec.dtype!=DTYPES[spec['dtype']]
+            or getattr(model,'dtype',model.codec.dtype)!=DTYPES[spec['model_dtype']]
             or codec_digest(model.codec)!=bundle['codec_sha256']):
         raise ValueError('adapter base, codec configuration, precision, or frozen weights differ')
     # Stage all device copies before mutating the existing model.
@@ -101,5 +103,16 @@ def load_adapter(path,*,device='cpu'):
     bundle=read_checkpoint(path);spec=_validate(bundle)
     from haru.models.haru import HaruModel
     model=HaruModel.from_pretrained(spec['base_model'],revision=spec['base_revision'],
-                                   device=device,dtype=DTYPES[spec['dtype']])
+                                   device=device,dtype=DTYPES[spec['model_dtype']])
+    if model.codec.dtype!=DTYPES[spec['dtype']]:
+        from haru.models.loaders import resolve_checkpoint
+        from safetensors import safe_open
+        directory=resolve_checkpoint(spec['base_model'],spec['base_revision'])
+        model.codec.to(dtype=DTYPES[spec['dtype']])
+        # Casting BF16 back to FP32 cannot restore the original precision.
+        # Read the original codec tensors again before checking its pinned hash.
+        with safe_open(str(directory/'model.safetensors'),framework='pt',device='cpu') as saved:
+            state={key.removeprefix('codec.'):saved.get_tensor(key)
+                   for key in saved.keys() if key.startswith('codec.')}
+        model.codec.load_state_dict(state,strict=True)
     return _apply(model,bundle,base_model=spec['base_model'],base_revision=spec['base_revision'])

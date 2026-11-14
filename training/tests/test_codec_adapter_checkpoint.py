@@ -34,7 +34,7 @@ def test_artifact_contains_adapter_only_and_reproduces_waveform(tmp_path):
     assert torch.equal(model.codec.decode(z),target.codec.decode(z))
 
 
-@pytest.mark.parametrize('mutation',['kind','revision','config','shape','nonfinite','fixed_codec','dtype'])
+@pytest.mark.parametrize('mutation',['kind','revision','config','shape','nonfinite','fixed_codec','dtype','model_dtype','version'])
 def test_invalid_artifact_does_not_partially_modify_model(tmp_path,mutation):
     from haru_training.codec_adapter_inference import apply_adapter
     _,path=artifact(tmp_path);bundle=read_checkpoint(path);target=base()
@@ -44,6 +44,8 @@ def test_invalid_artifact_does_not_partially_modify_model(tmp_path,mutation):
     elif mutation=='shape':bundle['weights']['up.weight']=torch.zeros(1,1,1)
     elif mutation=='nonfinite':bundle['weights']['up.bias'][0]=float('nan')
     elif mutation=='dtype':bundle['spec']['dtype']='bfloat16'
+    elif mutation=='model_dtype':bundle['spec']['model_dtype']='bfloat16'
+    elif mutation=='version':bundle['version']=1
     else:
         with torch.no_grad():target.codec.decoder.head.bias.add_(.1)
     changed=write_checkpoint(tmp_path/'changed',bundle)
@@ -73,3 +75,31 @@ def test_loader_reads_kind_before_download_and_loads_pinned_fresh_base(tmp_path,
 def test_legacy_head_artifact_marker_cannot_be_combined_with_codec_update():
     model=base();model.inference_feedback_mode='generated_audio'
     with pytest.raises(ValueError,match='feedback'):attach_adapter(model,rank=4)
+
+
+def test_fresh_loader_preserves_mixed_model_and_original_codec_precision(tmp_path,monkeypatch):
+    from safetensors.torch import save_file
+    from haru.models.haru import HaruModel
+    from haru_training.codec_adapter_inference import export_adapter,load_adapter,codec_digest
+    model=base(); original=deepcopy(model.codec)
+    model.bfloat16();model.codec=original
+    # Store the original checkpoint, before its codec would be rounded by a BF16 loader.
+    checkpoint=tmp_path/'base';checkpoint.mkdir()
+    save_file({'codec.'+k:v for k,v in original.state_dict().items()},checkpoint/'model.safetensors')
+    adapter=attach_adapter(model,rank=4)
+    with torch.no_grad():adapter.up.bias.fill_(.02)
+    path=export_adapter(model,tmp_path/'mixed',base_model='test/tiny-haru',base_revision='a'*40,
+        target_speaker='target',dataset_sha256='b'*64)
+    bundle=read_checkpoint(path)
+    assert bundle['spec']['model_dtype']=='bfloat16' and bundle['spec']['dtype']=='float32'
+    calls=[]
+    def load(repo,**kwargs):
+        calls.append(kwargs);return base().to(dtype=kwargs['dtype']).requires_grad_(False)
+    monkeypatch.setattr(HaruModel,'from_pretrained',load)
+    monkeypatch.setattr('haru.models.loaders.resolve_checkpoint',lambda *args:checkpoint)
+    restored=load_adapter(path,device='cpu')
+    assert calls[0]['dtype']==torch.bfloat16
+    assert restored.dtype==torch.bfloat16 and restored.codec.dtype==torch.float32
+    assert codec_digest(restored.codec)==bundle['codec_sha256']
+    z=torch.ones(1,2,64)
+    assert torch.equal(model.codec.decode(z),restored.codec.decode(z))
