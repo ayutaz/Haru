@@ -10,6 +10,8 @@ disabling LoRA alone does not restore the trained head or projectors.
 from dataclasses import asdict
 import hashlib
 import json
+import math
+from numbers import Real
 
 import torch
 
@@ -150,17 +152,23 @@ def load_inference(path, *, device, dtype=None, base_directory=None):
     return _apply(model, bundle, spec, spec.base_model, spec.base_revision)
 
 
-def load_with_frozen_feedback(path, *, device, dtype=None, base_directory=None):
+def load_with_frozen_feedback(path, *, device, dtype=None, base_directory=None,
+                              adaptation_strength=1.):
     """Return an adapted model and a separate original head for replay feedback.
 
     Only head adaptation is supported: changes to the LM or either projector
     would defeat preservation of the base internal stream. This extra head
     increases inference memory and compute; it does not prove audible quality.
     Pass the returned head explicitly to replay(..., feedback_head=head).
+    adaptation_strength interpolates head weights with the original base to
+    reduce destructive changes. It is not a voice-similarity percentage.
     """
     from copy import deepcopy
     from haru import HaruModel
 
+    if (isinstance(adaptation_strength,bool) or not isinstance(adaptation_strength,Real)
+            or not math.isfinite(adaptation_strength) or not 0<=adaptation_strength<=1):
+        raise ValueError('adaptation strength must be finite and between zero and one')
     bundle,spec=_read(path)
     if spec.mode not in ('head','head_output') or spec.train_projectors:
         raise ValueError('frozen feedback requires unchanged LM and audio projectors')
@@ -169,5 +177,12 @@ def load_with_frozen_feedback(path, *, device, dtype=None, base_directory=None):
     feedback=deepcopy(model.head).eval().requires_grad_(False)
     configure_trainable(model,TrainingConfig(mode=spec.mode))
     _apply(model,bundle,spec,spec.base_model,spec.base_revision)
+    if adaptation_strength<1:
+        original=dict(feedback.named_parameters())
+        with torch.no_grad():
+            for name,value in model.head.named_parameters():
+                value.copy_(torch.lerp(original[name].float(),value.float(),
+                                       float(adaptation_strength)).to(value.dtype))
     model.inference_feedback_mode='separate_frozen_head'
+    model.voice_adaptation_strength=float(adaptation_strength)
     return model,feedback
