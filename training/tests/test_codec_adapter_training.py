@@ -56,7 +56,12 @@ def test_three_actual_updates_freeze_base_and_resume_exactly(tmp_path):
     assert changed and all('stem.adapter.' in n for n in changed)
     assert all(p.grad is None for p in full.content.parameters())
     first = trainer(); first.fit(until_step=1); first.save(tmp_path/'step1')
-    resumed = trainer(); resumed.restore(tmp_path/'step1'); resumed.fit()
+    saved_rng=torch.random.get_rng_state().clone()
+    resumed = trainer();torch.rand(17)
+    assert not torch.equal(saved_rng,torch.random.get_rng_state())
+    resumed.restore(tmp_path/'step1')
+    assert torch.equal(saved_rng,torch.random.get_rng_state())
+    resumed.fit()
     for key, value in get_adapter(full.model.codec).state_dict().items():
         assert torch.equal(value, get_adapter(resumed.model.codec).state_dict()[key])
     assert full.order == resumed.order and full.cursor == resumed.cursor and full.step == 3
@@ -117,7 +122,7 @@ def test_resume_in_fresh_python_process_and_inference_reload(tmp_path):
     from haru_training.checkpoint import read_checkpoint
     from haru_training.codec_adapter import get_adapter
     state=trainer();state.fit(until_step=1);state.save(tmp_path/'step1')
-    state.fit()
+    state.fit();expected_cpu_rng=torch.random.get_rng_state().clone()
     root=Path(__file__).parents[2]
     script='''
 import sys,torch
@@ -127,12 +132,13 @@ from test_codec_adapter_checkpoint import base
 from haru_training.codec_adapter import get_adapter
 from haru_training.codec_adapter_inference import export_adapter,apply_adapter
 from haru_training.checkpoint import write_checkpoint
-p=Path(sys.argv[1]);t=trainer();t.restore(p/'step1');t.fit()
+p=Path(sys.argv[1]);t=trainer();torch.rand(13);t.restore(p/'step1');t.fit()
+cpu_rng=torch.random.get_rng_state().clone()
 export_adapter(t.model,p/'inference',**t._identity())
 model=base();apply_adapter(model,p/'inference',base_model=t.spec.base_model,base_revision=t.spec.base_revision)
 z=torch.ones(1,2,64)
 assert torch.equal(t.model.codec.decode(z),model.codec.decode(z))
-write_checkpoint(p/'child',dict(weights=get_adapter(t.model.codec).state_dict(),optimizer=t.optimizer.state_dict(),rng=t.generator.get_state(),order=t.order,cursor=t.cursor))
+write_checkpoint(p/'child',dict(weights=get_adapter(t.model.codec).state_dict(),optimizer=t.optimizer.state_dict(),rng=t.generator.get_state(),cpu_rng=cpu_rng,order=t.order,cursor=t.cursor))
 '''
     env={**os.environ,'PYTHONPATH':os.pathsep.join(str(root/p) for p in ('training/tests','training/src','haru'))}
     result=subprocess.run([sys.executable,'-X','utf8','-c',script,str(tmp_path)],env=env,
@@ -144,3 +150,13 @@ write_checkpoint(p/'child',dict(weights=get_adapter(t.model.codec).state_dict(),
         for name,value in v.items():assert torch.equal(value,child['optimizer']['state'][k][name])
     assert state.cursor==child['cursor'] and state.order==child['order']
     assert torch.equal(state.generator.get_state(),child['rng'])
+    assert torch.equal(expected_cpu_rng,child['cpu_rng'])
+
+
+def test_training_accepts_codec_only_without_an_lm_or_audio_head():
+    from haru_training.codec_adapter_training import CodecTrainer,TrainSpec
+    model=nn.Module();model.codec=base().codec
+    state=CodecTrainer(model,[pair()],TrainSpec(base_model='test/tiny-haru',base_revision='c'*40,
+        target_speaker='target',max_steps=1),rank=4)
+    assert not hasattr(state.model,'lm') and not hasattr(state.model,'head')
+    assert len(state.fit())==1 and state.step==1
