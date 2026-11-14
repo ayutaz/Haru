@@ -40,6 +40,9 @@ dev = ["pytest>=8"]
 haru-server = "haru.server:main"
 haru-inference = "haru.run_inference:main"
 
+[tool.setuptools]
+package-dir = { "" = "." }
+
 [tool.setuptools.dynamic]
 version = { attr = "haru.__version__" }
 
