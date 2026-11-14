@@ -58,11 +58,10 @@ def meanflow_loss(field, data: torch.Tensor, noise: torch.Tensor, time: torch.Te
     if drop_mask.shape != (count,) or drop_mask.dtype != torch.bool:
         raise ValueError('condition dropout needs one boolean per sample')
     condition = torch.where(drop_mask[:, None], torch.zeros_like(condition), condition)
-    guidance = torch.where(drop_mask, torch.ones_like(guidance), guidance)
     z = noise * (1 - time[:, None]) + data * time[:, None]
     with torch.no_grad():
         vc = field(z, condition, time, torch.zeros_like(interval), guidance)
-        vu = field(z, torch.zeros_like(condition), time, torch.zeros_like(interval), torch.ones_like(guidance))
+        vu = field(z, torch.zeros_like(condition), time, torch.zeros_like(interval), guidance)
         target = data - noise + (1 - 1 / guidance[:, None]) * (vc - vu)
         target = torch.where(drop_mask[:, None], data - noise, target).detach()
 

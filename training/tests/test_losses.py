@@ -41,6 +41,32 @@ def test_guidance_target_and_condition_dropout_have_explicit_semantics():
     torch.testing.assert_close(dropped.loss, meanflow_loss(AffineField(), *arguments()).loss)
 
 
+def test_cfg_unconditional_branch_uses_same_guidance_as_conditional_branch():
+    class GuidanceField:
+        def __call__(self,z,condition,t,h,guidance):
+            return condition+guidance[:,None]*3
+    args=arguments()
+    args[4]=torch.tensor([2.],dtype=torch.float64)
+    args[5]=torch.tensor([[4.]],dtype=torch.float64)
+    result=meanflow_loss(GuidanceField(),*args)
+    # iMF Algorithm 2: vc(w=2,c)=10, vu(w=2,null)=6, target=1+.5*4=3.
+    assert result.target.item()==pytest.approx(3.)
+
+
+def test_dropped_condition_is_trained_across_sampled_guidance_values():
+    seen=[]
+    class GuidanceField:
+        def __call__(self,z,condition,t,h,guidance):
+            seen.append((condition.detach().clone(),guidance.detach().clone()))
+            return condition+guidance[:,None]*3
+    args=arguments()
+    args[4]=torch.tensor([2.],dtype=torch.float64)
+    args[5]=torch.tensor([[4.]],dtype=torch.float64)
+    result=meanflow_loss(GuidanceField(),*args,drop_mask=torch.tensor([True]))
+    assert result.target.item()==1
+    assert all((condition==0).all() and (guidance==2).all() for condition,guidance in seen)
+
+
 def test_zero_interval_reduces_to_instantaneous_velocity_regression():
     args = arguments()
     args[3].zero_()
