@@ -6,6 +6,7 @@ actions. A validation candidate is not a perceptual or publication approval.
 """
 
 from dataclasses import asdict
+from copy import deepcopy
 import math
 from pathlib import Path
 
@@ -21,12 +22,17 @@ SELECTION_POLICY = {'speech_text_increase_max': .2,
                     'scope': 'validation candidate only; voice quality remains unknown'}
 
 
-def run_adaptation(trainer, destination, generate, *, speech_ids, dialogue_ids, interval=8):
+def run_adaptation(trainer, destination, generate, *, speech_ids, dialogue_ids, interval=8,
+                   boundary_review=None):
     """Save step zero and every observation; consume at most one full epoch.
 
     Rendering is frozen, but checkpoint/export occurs after gradient flags and
     RNG have been restored. Validation IDs must exactly partition the supplied
     held-out validation set; arbitrary training/test IDs cannot be requested.
+    When supplied, boundary_review receives a copy of the saved observation and
+    must return {'accepted': bool, 'reason': nonempty str} before more updates.
+    It may block for external inspection. Pending/invalid reviews never permit
+    training; acceptance does not override the automatic rejection rules.
     """
     speech_ids, dialogue_ids = list(speech_ids), list(dialogue_ids)
     combined = speech_ids+dialogue_ids
@@ -63,7 +69,18 @@ def run_adaptation(trainer, destination, generate, *, speech_ids, dialogue_ids, 
         export_inference(trainer,root/'inference'/f'step-{step:08d}')
         row={'step':step,'metrics':metrics,'rejection_reasons':reasons,
              'texts':{name:response['text'] for name,response in responses.items()},
-             'response_directory':folder.name,'voice_quality_evaluated':False}
+             'response_directory':folder.name,'voice_quality_evaluated':False,
+             'boundary_review':{'status':'pending' if boundary_review else 'not_requested'}}
+        if boundary_review is not None:
+            _json(root/f'review-request-{step:08d}.json',row)
+            with preserved_inference(trainer.model):
+                decision=boundary_review(deepcopy(row))
+            if (not isinstance(decision,dict) or type(decision.get('accepted')) is not bool
+                    or not isinstance(decision.get('reason'),str) or not decision['reason'].strip()):
+                raise ValueError('boundary review requires explicit acceptance and a nonempty reason')
+            row['boundary_review']={'status':'accepted' if decision['accepted'] else 'rejected',
+                                    'reason':decision['reason'].strip()}
+            stopped=stopped or not decision['accepted']
         _json(root/f'observation-{step:08d}.json',row)
         observations.append(row)
         if stopped or step==trainer.spec.max_steps:
