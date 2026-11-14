@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import soundfile as sf
 
 
 def test_japanese_character_error_is_not_a_voice_similarity_score():
@@ -17,14 +18,20 @@ def test_japanese_character_error_is_not_a_voice_similarity_score():
 
 def test_asr_reads_real_audio_without_the_model_text_as_a_prompt(tmp_path):
     from haru_training.speech_quality import transcribe_comparison
-    path=tmp_path/'response.wav';path.write_bytes(b'recorded audio')
+    path=tmp_path/'response.wav'
+    signal=np.sin(np.arange(24000,dtype=np.float32)*2*np.pi*440/24000)
+    sf.write(path,signal,24000,subtype='FLOAT')
     calls=[]
     class Recognizer:
         def transcribe(self,path,**kwargs):
             calls.append((path,kwargs))
             return iter([SimpleNamespace(start=0.,end=1.,text='こんにちは')]),SimpleNamespace(language='ja')
     result=transcribe_comparison(path,'違う生成テキスト',Recognizer(),expected_sha256=sha256(path.read_bytes()).hexdigest())
-    assert calls==[(str(path),dict(language='ja',beam_size=5,condition_on_previous_text=False,vad_filter=True))]
+    samples,kwargs=calls[0]
+    assert isinstance(samples,np.ndarray)
+    assert samples.shape==(16000,) and samples.dtype==np.float32
+    assert np.isfinite(samples).all() and np.std(samples)>.5
+    assert kwargs==dict(language='ja',beam_size=5,condition_on_previous_text=False,vad_filter=True)
     assert result['recognized_text']=='こんにちは'
     assert result['generated_text']=='違う生成テキスト'
     assert result['character_error_rate']>0

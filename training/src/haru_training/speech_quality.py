@@ -29,7 +29,11 @@ def transcribe_comparison(path, generated_text, recognizer, *, expected_sha256):
     path=Path(path)
     actual=sha256(path.read_bytes()).hexdigest()
     if actual!=expected_sha256:raise ValueError('audio differs from the declared response')
-    segments,info=recognizer.transcribe(str(path),language='ja',beam_size=5,
+    from .data import read_wave
+    # The ndarray interface expects 16 kHz mono PCM. Decode our WAVs with the
+    # same reader as training, avoiding version-dependent PyAV file decoding.
+    samples=read_wave(path,sample_rate=16000).mean(axis=1,dtype=np.float32)
+    segments,info=recognizer.transcribe(samples,language='ja',beam_size=5,
                                       condition_on_previous_text=False,vad_filter=True)
     rows=[{'start':s.start,'end':s.end,'text':s.text} for s in segments]
     for row in rows:
