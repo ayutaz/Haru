@@ -26,6 +26,7 @@ class EvaluationPolicy:
     minimum_rms: float = 1e-5
     maximum_clipped_fraction: float = .01
     minimum_speaker_gain: float = .02
+    minimum_calibrated_gain_fraction: float = .02
     minimum_references_per_group: int = 3
     minimum_independent_encoders: int = 2
     minimum_repeats: int = 3
@@ -152,7 +153,8 @@ def _panel(panel, hashes, root, policy):
     references = panel['references']
     source_ids, file_hashes = set(), set()
     groups = [[], []]
-    for ref in references:
+
+    def check_reference(ref):
         actual = _digest(root / ref['path'])
         if ref.get('wav_sha256') != actual:
             raise EvidenceError('speaker_reference_hash_mismatch')
@@ -162,6 +164,9 @@ def _panel(panel, hashes, root, policy):
             raise EvidenceError('speaker_reference_identity_missing')
         file_hashes.add(actual)
         source_ids.add(ref['source_id'])
+
+    for ref in references:
+        check_reference(ref)
         groups[ref['speaker_id'] != panel['target_speaker']].append(ref['embedding'])
     target, negatives = groups
     if min(map(len, groups)) < policy.minimum_references_per_group:
@@ -171,6 +176,16 @@ def _panel(panel, hashes, root, policy):
     score = lambda vector: float(np.mean([speaker_cosine(vector, ref) for ref in target]))
     positive = [float(np.mean([speaker_cosine(ref, other) for j, other in enumerate(target) if i != j]))
                 for i, ref in enumerate(target)]
+    calibrated = 'genuine_controls' in panel
+    if calibrated:
+        controls = panel['genuine_controls']
+        if not isinstance(controls, list) or len(controls) < policy.minimum_references_per_group:
+            raise EvidenceError('speaker_genuine_controls_insufficient')
+        for ref in controls:
+            check_reference(ref)
+            if ref['speaker_id'] != panel['target_speaker']:
+                raise EvidenceError('speaker_genuine_control_identity_mismatch')
+            positive.append(score(ref['embedding']))
     negative = [score(vector) for vector in negatives]
     lower, upper, negative_upper = min(positive), max(positive), max(negative)
     if negative_upper >= lower:
@@ -186,19 +201,31 @@ def _panel(panel, hashes, root, policy):
         raise EvidenceError('speaker_repeatability_audio_mismatch')
     noise = max(abs(score(row['embedding']) - baseline) for row in repeats)
     gain = candidate - baseline
-    required = max(policy.minimum_speaker_gain, 2 * noise)
+    calibration_gap = lower - negative_upper
+    minimum_gain = (policy.minimum_calibrated_gain_fraction * calibration_gap
+                    if calibrated else policy.minimum_speaker_gain)
+    required = max(minimum_gain, 2 * noise)
+    boundary = (lower + negative_upper) / 2 if calibrated else lower
     reasons = []
-    if candidate > upper + 1e-6:
+    # A maximum of a few reference scores is not a valid upper bound for an
+    # unseen genuine recording. With cross-utterance controls, retain that
+    # observation as a diagnostic rather than automatically rejecting it.
+    if not calibrated and candidate > upper + 1e-6:
         reasons.append('speaker_outside_calibration')
-    if gain > policy.minimum_speaker_gain and gain <= required:
+    if gain > minimum_gain and gain <= required:
         reasons.append('speaker_gain_within_noise')
-    if candidate < lower and gain > required:
+    if candidate < boundary and gain > required:
         reasons.append('speaker_below_target_range')
     return dict(encoder=panel['encoder'], revision=panel['revision'],
                 preprocessing_sha256=panel['preprocessing_sha256'],
                 baseline_cosine=baseline, candidate_cosine=candidate, gain=gain,
                 required_gain=required, repeatability_noise=noise,
                 genuine_range=[lower, upper], negative_upper=negative_upper,
+                gain_in_calibration_units=gain / calibration_gap,
+                target_boundary=boundary,
+                calibration_method='cross_utterance_controls' if calibrated else 'reference_only',
+                outside_observed_genuine_range=not lower <= candidate <= upper,
+                control_audit=panel.get('control_audit'),
                 metric_gain=not reasons and gain > required), reasons
 
 

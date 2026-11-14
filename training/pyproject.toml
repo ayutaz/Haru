@@ -21,6 +21,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
 haru-speech = { path = "../haru", editable = true }
 
 [tool.pytest.ini_options]
@@ -34,6 +35,8 @@ dev = [
 ]
 evaluation = [
     "faster-whisper>=1.2.1",
+    "speechbrain>=1.1.2",
+    "torchaudio==2.11.0",
 ]
 
 [build-system]

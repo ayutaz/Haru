@@ -367,3 +367,57 @@ def test_three_added_errors_at_policy_boundary_are_not_lost_to_roundoff(tmp_path
     report = evaluate(manifest, tmp_path)
     assert report['decision'] == 'reject'
     assert report['cases'][0]['content']['added_character_errors'] == 3
+
+
+def add_genuine_controls(panels, root):
+    for index, panel in enumerate(panels):
+        controls = []
+        for number, angle in enumerate((-.15, .05, .15)):
+            path = root / f'genuine-{index}-{number}.wav'
+            sf.write(path, np.full(30, .2 + .01 * (index * 3 + number)), 24000, subtype='FLOAT')
+            controls.append(dict(path=path.name, wav_sha256=digest(path), source_id=path.stem,
+                                 speaker_id='target', embedding=[np.cos(angle), np.sin(angle)]))
+        panel['genuine_controls'] = controls
+
+
+def test_cross_utterance_calibration_does_not_reject_genuine_above_reference_max(manifest, tmp_path):
+    panels = speaker_panels(manifest, tmp_path)
+    for panel in panels:
+        panel['candidate']['embedding'] = [1., 0.]
+    add_genuine_controls(panels, tmp_path)
+    manifest['cases'][0]['speaker_panels'] = panels
+    report = evaluate(manifest, tmp_path)
+    assert report['decision'] == 'candidate_for_listening'
+    assert report['voice_similarity_confirmed'] is False
+    row = report['cases'][0]['speaker']['encoders'][0]
+    assert row['calibration_method'] == 'cross_utterance_controls'
+    assert row['outside_observed_genuine_range'] is True
+    assert row['candidate_cosine'] == pytest.approx(np.mean([np.cos(.2), 1., np.cos(.2)]))
+
+
+def test_extra_genuine_controls_cannot_leak_candidate_audio(manifest, tmp_path):
+    panels = speaker_panels(manifest, tmp_path)
+    add_genuine_controls(panels, tmp_path)
+    panels[0]['genuine_controls'][0].update(
+        path='adapted/response.wav', wav_sha256=panels[0]['candidate']['wav_sha256'])
+    manifest['cases'][0]['speaker_panels'] = panels
+    report = evaluate(manifest, tmp_path)
+    assert report['decision'] == 'hold'
+    assert 'speaker_reference_leakage' in report['cases'][0]['reasons']
+
+
+def test_calibrated_gain_uses_encoder_dynamic_range_not_fixed_raw_cosine(manifest, tmp_path):
+    panels = speaker_panels(manifest, tmp_path)
+    add_genuine_controls(panels, tmp_path)
+    for panel in panels:
+        for ref in panel['references'][3:]:
+            ref['embedding'] = [np.cos(.7), np.sin(.7)]
+        panel['baseline']['embedding'] = [np.cos(.22), np.sin(.22)]
+        panel['baseline_repeats'] = [dict(wav_sha256=panel['baseline']['wav_sha256'],
+                                         embedding=[np.cos(angle), np.sin(angle)])
+                                     for angle in (.22, .2201, .2199)]
+    manifest['cases'][0]['speaker_panels'] = panels
+    report = evaluate(manifest, tmp_path)
+    assert report['decision'] == 'candidate_for_listening'
+    assert report['cases'][0]['speaker']['encoders'][0]['gain'] < .02
+    assert report['cases'][0]['speaker']['encoders'][0]['gain_in_calibration_units'] > .02
