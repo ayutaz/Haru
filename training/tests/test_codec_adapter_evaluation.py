@@ -10,14 +10,18 @@ import torch
 from test_codec_adapter_checkpoint import base
 
 
-def comparison(tmp_path):
+def comparison(tmp_path,train_sha256='1'*64):
     from haru_training.codec_adapter import attach_adapter
     from haru_training.codec_adapter_evaluation import save_decoder_comparison
     model=base();adapter=attach_adapter(model,rank=4)
     with torch.no_grad():adapter.up.bias.fill_(.02)
     model.requires_grad_(False)
     latent=torch.ones(1,2,64)
+    training=tmp_path/'training-inputs.json'
+    training.write_text(json.dumps({'records':[dict(group_id='train-group',split='train',
+        target_speaker='target',source_sha256='2'*64,target_sha256=train_sha256)]}))
     metadata=dict(input_sha256='a'*64,base_model='test/tiny-haru',base_revision='c'*40,
+        target_speaker='target',dataset_input_manifest_sha256=sha256(training.read_bytes()).hexdigest(),
         representation='raw_codec_sample',text='今日は晴れです。',config={'seed':7},system_prompt='test')
     save_decoder_comparison(tmp_path/'comparison',model,latent,metadata)
     return tmp_path/'comparison'
@@ -45,9 +49,28 @@ def test_blind_html_has_embedded_audio_and_separate_key_without_scores_or_condit
     from haru_training.codec_adapter_evaluation import write_blind_html
     p=comparison(tmp_path)
     ref=tmp_path/'ref.wav';sf.write(ref,np.ones(3200)*.1,24000)
-    write_blind_html(p,ref,reference_sha256=sha256(ref.read_bytes()).hexdigest(),seed=1)
+    digest=sha256(ref.read_bytes()).hexdigest()
+    args=dict(reference_sha256=digest,seed=1,training_manifest=tmp_path/'training-inputs.json',
+        reference_info=dict(group_id='reference-group',split='reference',speaker='target',wav_sha256=digest))
+    write_blind_html(p,ref,**args)
     content=(p/'listen.html').read_text(encoding='utf-8')
     assert content.count('data:audio/wav;base64,')==3
     assert 'cosine' not in content and 'baseline' not in content and 'candidate' not in content
     assert set(json.loads((p/'answer-key.json').read_text())['order'])=={'baseline','candidate'}
-    with pytest.raises(FileExistsError):write_blind_html(p,ref,reference_sha256=sha256(ref.read_bytes()).hexdigest(),seed=1)
+    with pytest.raises(FileExistsError):write_blind_html(p,ref,**args)
+
+
+@pytest.mark.parametrize('bad',['training_group','training_wave','wrong_speaker','wrong_role'])
+def test_blind_reference_requires_an_untrained_target_recording(tmp_path,bad):
+    from haru_training.codec_adapter_evaluation import write_blind_html
+    ref=tmp_path/'ref.wav';sf.write(ref,np.ones(3200)*.1,24000)
+    digest=sha256(ref.read_bytes()).hexdigest()
+    p=comparison(tmp_path,train_sha256=digest if bad=='training_wave' else '1'*64)
+    reference=dict(group_id='reference-group',split='reference',speaker='target',wav_sha256=digest)
+    if bad=='training_group':reference['group_id']='train-group'
+    if bad=='wrong_speaker':reference['speaker']='other'
+    if bad=='wrong_role':reference['split']='train'
+    with pytest.raises(ValueError):
+        write_blind_html(p,ref,reference_sha256=digest,seed=1,reference_info=reference,
+            training_manifest=tmp_path/'training-inputs.json')
+    assert not (p/'listen.html').exists()

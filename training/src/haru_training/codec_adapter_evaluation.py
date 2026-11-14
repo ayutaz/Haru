@@ -44,6 +44,8 @@ def save_decoder_comparison(destination,model,latents,metadata):
             or not re.fullmatch('[a-f0-9]{64}',metadata.get('input_sha256',''))
             or not re.fullmatch('[a-f0-9]{40}',metadata.get('base_revision',''))
             or not isinstance(metadata.get('text'),str) or not isinstance(metadata.get('system_prompt'),str)
+            or not isinstance(metadata.get('target_speaker'),str) or not metadata['target_speaker']
+            or not re.fullmatch('[a-f0-9]{64}',metadata.get('dataset_input_manifest_sha256',''))
             or type(metadata.get('config',{}).get('seed')) is not int):
         raise ValueError('incomplete raw generation provenance')
     if destination.exists():raise FileExistsError('comparison already exists')
@@ -95,11 +97,27 @@ def evaluate_comparison(path,manifest):
     return evaluate_manifest(manifest,root=Path(path))
 
 
-def write_blind_html(path,reference,*,reference_sha256,seed):
-    path=Path(path);_verify(path)
+def write_blind_html(path,reference,*,reference_sha256,seed,reference_info,training_manifest):
+    path=Path(path);info=_verify(path)
     if (path/'listen.html').exists() or (path/'answer-key.json').exists():
         raise FileExistsError('listening presentation already exists')
     if _hash(reference)!=reference_sha256:raise ValueError('reference audio identity differs')
+    if _hash(training_manifest)!=info['dataset_input_manifest_sha256']:
+        raise ValueError('training membership manifest differs')
+    try:
+        records=json.loads(Path(training_manifest).read_text(encoding='utf-8'))['records']
+        groups=[r['group_id'] for r in records]
+        hashes={r[k] for r in records for k in ('source_sha256','target_sha256',
+            'source_original_sha256','target_original_sha256') if k in r}
+        if (not records or len(set(groups))!=len(groups) or any(r['split']!='train' for r in records)
+                or reference_info['group_id'] in groups or reference_sha256 in hashes
+                or not reference_info['group_id'] or reference_info['split'] not in ('reference','validation')
+                or reference_info['speaker']!=info['target_speaker']
+                or reference_info['wav_sha256']!=reference_sha256
+                or any(r['target_speaker']!=info['target_speaker'] for r in records)):
+            raise ValueError('reference must be an untrained recording of the target speaker')
+    except (KeyError,TypeError) as error:
+        raise ValueError('reference or training membership evidence is incomplete') from error
     import soundfile as sf
     audio,rate=sf.read(reference)
     if audio.ndim!=1 or not len(audio) or not np.isfinite(audio).all():
@@ -114,6 +132,8 @@ def write_blind_html(path,reference,*,reference_sha256,seed):
     html+='<h2>本人の参照音声</h2>'+player(reference)
     for label,side in zip(('A','B'),order):html+='<h2>'+label+'</h2>'+player(path/side/'response.wav')
     (path/'answer-key.json').write_text(json.dumps(dict(seed=seed,order=order,
-        reference_sha256=reference_sha256,voice_similarity_confirmed=False)),encoding='utf-8')
+        reference_sha256=reference_sha256,reference_info=reference_info,
+        dataset_input_manifest_sha256=info['dataset_input_manifest_sha256'],
+        voice_similarity_confirmed=False)),encoding='utf-8')
     (path/'listen.html').write_text(html,encoding='utf-8')
     return path/'listen.html'

@@ -96,6 +96,8 @@ def _data_digest(pairs):
 def _module_digest(module):
     digest = sha256()
     if module is not None:
+        digest.update((type(module).__module__+'.'+type(module).__qualname__).encode())
+        digest.update(json.dumps(getattr(module,'provenance',None),sort_keys=True,allow_nan=False).encode())
         for key, value in module.state_dict().items():
             value = value.detach().cpu().contiguous()
             digest.update(key.encode()); digest.update(str((tuple(value.shape), value.dtype)).encode())
