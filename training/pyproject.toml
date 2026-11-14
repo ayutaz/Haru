@@ -38,6 +38,9 @@ evaluation = [
     "speechbrain>=1.1.2",
     "torchaudio==2.11.0",
 ]
+preparation = [
+    "pyopenjtalk-plus>=0.4.1.post10",
+]
 
 [build-system]
 requires = ["setuptools>=77"]
