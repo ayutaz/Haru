@@ -38,6 +38,21 @@ def test_review_requires_real_files_and_rejects_unknown_quality_before_gpu(tmp_p
         preflight(tmp_path, tmp_path/'review.json')
 
 
+def test_controlled_speech_trial_does_not_claim_a_dialogue_listening_review(tmp_path):
+    review = assets(tmp_path)
+    review.update(quality_status='technically_reviewed_for_controlled_speech_trials',
+                  scope='controlled_speech_trials_only', listening_status='not_listened')
+    write(tmp_path/'review.json', review)
+    result = preflight(tmp_path, tmp_path/'review.json')
+    assert result['manual_review_recorded'] is False
+    assert result['replay_training_approved'] is False
+    assert result['dialogues'] == 1
+    review['scope'] = 'mixed_adaptation'
+    write(tmp_path/'review.json', review)
+    with pytest.raises(ValueError, match='review'):
+        preflight(tmp_path, tmp_path/'review.json')
+
+
 def test_review_cannot_override_changed_audio_or_heldout_source_lineage(tmp_path):
     assets(tmp_path)
     data = json.loads((tmp_path/'dialogue.json').read_text(encoding='utf-8'))

@@ -42,12 +42,19 @@ def preflight(inputs, review_path):
     """Authenticate real data and record an explicit prior review, not infer one.
 
     Notes/status are review evidence supplied by the operator; their truth cannot
-    be established by parsing JSON or passing waveform checks. No quality verdict
-    is generated automatically from these technical checks.
+    be established by parsing JSON or passing waveform checks. A technical-only
+    review permits these three-utterance speech diagnostics, which never consume
+    dialogue teachers. It does not approve replay training or certify listening
+    quality. No quality verdict is generated automatically from waveform checks.
     """
     inputs, review_path = Path(inputs), Path(review_path)
     review = _read(review_path)
-    if (review.get('quality_status') != 'reviewed_acceptable_for_replay'
+    replay_reviewed = review.get('quality_status') == 'reviewed_acceptable_for_replay'
+    controlled_only = (
+        review.get('quality_status') == 'technically_reviewed_for_controlled_speech_trials'
+        and review.get('scope') == 'controlled_speech_trials_only'
+        and review.get('listening_status') == 'not_listened')
+    if (not (replay_reviewed or controlled_only)
             or review.get('source_split_checked') is not True
             or any(not isinstance(review.get(key), str) or not review[key].strip()
                    for key in ('source_and_usage_notes', 'voice_and_pronunciation_notes', 'reference_policy'))):
@@ -64,7 +71,8 @@ def preflight(inputs, review_path):
         # Actual model PAD/EOP are checked again when constructing the sequence.
         validate_text_chunks(row, checked['frames'], -1, -2)
     return {'review_sha256': _sha(review_path), 'manifest_sha256': _sha(manifest),
-            'dialogues': len(qc), 'manual_review_recorded': True,
+            'dialogues': len(qc), 'manual_review_recorded': replay_reviewed,
+            'replay_training_approved': replay_reviewed,
             'technical_checks': qc, 'review': review}
 
 
