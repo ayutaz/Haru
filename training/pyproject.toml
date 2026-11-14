@@ -39,7 +39,10 @@ evaluation = [
     "torchaudio==2.11.0",
 ]
 preparation = [
+    "mecab-python3>=1.0.12",
+    "pykakasi>=2.3,<3",
     "pyopenjtalk-plus>=0.4.1.post10",
+    "unidic-lite>=1.0.8",
 ]
 
 [build-system]

@@ -44,7 +44,8 @@ def test_rejected_alignment_never_creates_a_training_pair():
     with pytest.raises(ValueError):prepare(source=bad)
 
 
-def test_word_delimiters_are_not_counted_as_pronunciation_errors():
+@pytest.mark.parametrize('tokens',[[1,2,3],[1,4,2,4,3]])
+def test_word_delimiters_are_not_counted_as_pronunciation_errors(tokens):
     from haru_training.codec_pair_preparation import prepare_pair
     data=observations()
     data=np.pad(data,((0,0),(0,1)),constant_values=-12.)
@@ -52,6 +53,6 @@ def test_word_delimiters_are_not_counted_as_pronunciation_errors():
     data=data-np.log(np.exp(data).sum(1,keepdims=True))
     item=prepare()
     result=prepare_pair(item.metadata,np.ones(6400,dtype='float32')*.1,
-                         np.ones(6400,dtype='float32')*.2,item.latents,data,data,[1,2,3],
+                         np.ones(6400,dtype='float32')*.2,item.latents,data,data,tokens,
                          blank=0,splits={'train':['line']},ignore_tokens=[4])
     assert result.metadata['quality']['source_token_error_rate']==0

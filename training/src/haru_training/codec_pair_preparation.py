@@ -43,7 +43,8 @@ def prepare_pair(metadata,source_audio,target_audio,latents,source_log_probs,tar
     source,target=[np.asarray(value,dtype=np.float32) for value in (source_audio,target_audio)]
     if any(value.ndim!=1 or len(value)<=3200 or not np.isfinite(value).all() for value in (source,target)):
         raise ValueError('preparation needs finite mono 24 kHz source and target')
-    if not tokens:raise ValueError('content reference is empty')
+    content_tokens=[value for value in tokens if value not in ignore_tokens]
+    if not content_tokens:raise ValueError('content reference is empty')
     spans=[];errors=[]
     for audio,probs in ((source,source_log_probs),(target,target_log_probs)):
         probs=np.asarray(probs,dtype=np.float64)
@@ -53,7 +54,7 @@ def prepare_pair(metadata,source_audio,target_audio,latents,source_log_probs,tar
         # Keep acoustic observations intact; ignore formatting-only delimiter
         # tokens solely when comparing the independently decoded kana text.
         decoded=[value for value in collapse_ctc(probs,blank) if value not in ignore_tokens]
-        errors.append(token_error_rate(tokens,decoded))
+        errors.append(token_error_rate(content_tokens,decoded))
         if errors[-1]>.35:raise ValueError('content mismatch before forced alignment')
         spans.append(align_ctc(probs,list(map(int,tokens)),blank=int(blank)))
     confidence=min(row['confidence'] for rows in spans for row in rows)
