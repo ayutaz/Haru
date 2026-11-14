@@ -50,8 +50,14 @@ def make_pair(metadata,latents,spectrum,posteriors,*,splits):
                 or not torch.allclose(p.sum(-1),torch.ones(len(p)),atol=1e-5,rtol=1e-5)):
             raise ValueError('invalid raw latents, lengths, or aligned teacher features')
         a=m['alignment']
-        if a['status']!='accepted' or a['method']!='ctc-token-centers-v1':
+        if a['status']!='accepted' or a['method'] not in ('ctc-token-centers-v1','observed-ctc-anchors-v1'):
             raise ValueError('temporal correspondence has not been accepted')
+        if a['method']=='observed-ctc-anchors-v1':
+            q=m['quality']
+            if (not re.fullmatch('[a-f0-9]{40}',m['ctc_revision'])
+                    or q['matched_tokens']<12 or min(q['source_coverage'],q['target_coverage'])<2/3
+                    or q['minimum_anchor_confidence']<.5 or q['maximum_anchor_gap_seconds']>1.):
+                raise ValueError('observed anchor quality is insufficient')
         left,right=np.asarray(a['source_seconds']),np.asarray(a['target_seconds'])
         if (left.ndim!=1 or len(left)<2 or right.shape!=left.shape
                 or not np.isfinite(left).all() or not np.isfinite(right).all()

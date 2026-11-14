@@ -85,3 +85,43 @@ def prepare_pair(metadata,source_audio,target_audio,latents,source_log_probs,tar
                           local_slope_05=float(np.quantile(slopes,.05)),local_slope_95=float(np.quantile(slopes,.95)),
                           human_quality_confirmed=False))
     return make_pair(m,latents,aligned_spectrum,aligned_p,splits=splits)
+
+
+def prepare_observed_pair(metadata,source_audio,target_audio,latents,source_log_probs,target_log_probs,
+                          tokens,*,blank,splits,ignore_tokens=()):
+    """Retain supported observed anchors; hold examples with unmatched regions."""
+    from .observed_ctc_alignment import observed_anchors
+    m=deepcopy(metadata)
+    source,target=[np.asarray(value,dtype=np.float32) for value in (source_audio,target_audio)]
+    if any(value.ndim!=1 or len(value)<=3200 or not np.isfinite(value).all()
+           or np.sqrt(np.mean(value.astype(np.float64)**2))<1e-5 for value in (source,target)):
+        raise ValueError('preparation needs finite non-silent mono 24 kHz speech')
+    content_tokens=[value for value in tokens if value not in ignore_tokens]
+    if not content_tokens:raise ValueError('content reference is empty')
+    errors=[]
+    for audio,probs in ((source,source_log_probs),(target,target_log_probs)):
+        probs=np.asarray(probs,dtype=np.float64)
+        if (probs.ndim!=2 or not np.isfinite(probs).all()
+                or len(probs)!=((len(audio)*2+2)//3-400)//320+1):
+            raise ValueError('invalid CTC content evidence or convolution clock')
+        decoded=[v for v in collapse_ctc(probs,blank) if v not in ignore_tokens]
+        errors.append(token_error_rate(content_tokens,decoded))
+        if errors[-1]>.35:raise ValueError('content mismatch before observed alignment')
+    left,right,quality=observed_anchors(source_log_probs,target_log_probs,
+        source_seconds=len(source)/24000,target_seconds=len(target)/24000,blank=blank,ignore_tokens=ignore_tokens)
+    slopes=np.diff(right)/np.diff(left);ratio=len(target)/len(source)
+    if not .5<=ratio<=2 or np.quantile(slopes,.05)<.125 or np.quantile(slopes,.95)>8:
+        raise ValueError('temporal correspondence has excessive local stretching')
+    target_spectrum=log_spectrum(target).numpy()
+    spectrum=warp_features(target_spectrum,np.arange(len(target_spectrum))*160/24000,
+        np.arange(len(source)//160+1)*160/24000,left,right)
+    posteriors=warp_features(np.exp(target_log_probs),ctc_times(len(target_log_probs)),
+        ctc_times(len(source_log_probs)),left,right)
+    posteriors/=posteriors.sum(-1,keepdims=True)
+    quality.update(source_token_error_rate=errors[0],target_token_error_rate=errors[1],duration_ratio=ratio,
+                   local_slope_05=float(np.quantile(slopes,.05)),local_slope_95=float(np.quantile(slopes,.95)))
+    m.update(kind='haru-codec-pair',version=1,representation='raw_codec_mean',sample_rate=24000,
+        valid_samples=len(source),warmup_samples=3200,spectral_hop=160,ctc_frames=len(source_log_probs),
+        alignment=dict(status='accepted',method='observed-ctc-anchors-v1',source_seconds=left.tolist(),
+            target_seconds=right.tolist(),scope=quality['scope']),quality=quality)
+    return make_pair(m,latents,spectrum,posteriors,splits=splits)
