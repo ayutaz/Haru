@@ -62,9 +62,27 @@ class DuplexSession:
         system_prompt: str = "",
         reference: np.ndarray | torch.Tensor | None = None,
         config: DuplexConfig | None = None,
+        *,
+        feedback_head=None,
     ):
-        """``reference``: mono 24 kHz clip of the voice the model should speak with."""
+        """``reference``: mono 24 kHz clip of the voice the model should speak with.
+
+        An optional frozen ``feedback_head`` supplies the internal audio stream
+        while ``model.head`` supplies the audible stream, using the same noise.
+        It preserves the base conversation path only when the rest of the
+        model is unchanged. Audible pronunciation still needs evaluation.
+        """
         self.model = model
+        if feedback_head is not None and (
+            not isinstance(feedback_head, torch.nn.Module)
+            or not callable(getattr(feedback_head, "sample", None))
+            or getattr(feedback_head, "config", None) != model.head.config
+            or feedback_head.training
+            or any(p.requires_grad or p.device != model.device or p.dtype != model.dtype
+                   for p in feedback_head.parameters())
+        ):
+            raise ValueError("feedback head must be a compatible eval, frozen head on the model device and dtype")
+        self.feedback_head = feedback_head
         self.config = config or DuplexConfig()
         self.system_prompt = system_prompt
         cfg = model.config
@@ -160,9 +178,12 @@ class DuplexSession:
             1, model.config.latent_dim, device=hidden.device, dtype=model.dtype, generator=self._generator
         )
         latent = model.unscale_latents(model.head.sample(hidden, noise, cfg.guidance_scale))
+        feedback = latent if self.feedback_head is None else model.unscale_latents(
+            self.feedback_head.sample(hidden, noise, cfg.guidance_scale)
+        )
         audio = self._codec.decode(latent[None])[0].float().clamp(-1.0, 1.0)
 
-        self._token, self._latent = token, latent
+        self._token, self._latent = token, feedback
         token_id = int(token)
         if self._dry is not None:
             self._dry.update(token_id)

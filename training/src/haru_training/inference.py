@@ -143,3 +143,24 @@ def load_inference(path, *, device, dtype=None, base_directory=None):
     configure_trainable(model, TrainingConfig(mode=spec.mode, lora_rank=spec.lora_rank,
                                              train_projectors=spec.train_projectors))
     return _apply(model, bundle, spec, spec.base_model, spec.base_revision)
+
+
+def load_with_frozen_feedback(path, *, device, dtype=None, base_directory=None):
+    """Return an adapted model and a separate original head for replay feedback.
+
+    Only head adaptation is supported: changes to the LM or either projector
+    would defeat preservation of the base internal stream. This extra head
+    increases inference memory and compute; it does not prove audible quality.
+    Pass the returned head explicitly to replay(..., feedback_head=head).
+    """
+    from copy import deepcopy
+    from haru import HaruModel
+
+    bundle,spec=_read(path)
+    if spec.mode not in ('head','head_output') or spec.train_projectors:
+        raise ValueError('frozen feedback requires unchanged LM and audio projectors')
+    model=HaruModel.from_pretrained(base_directory or spec.base_model,
+        revision=spec.base_revision,device=device,dtype=dtype)
+    feedback=deepcopy(model.head).eval().requires_grad_(False)
+    configure_trainable(model,TrainingConfig(mode=spec.mode))
+    return _apply(model,bundle,spec,spec.base_model,spec.base_revision),feedback

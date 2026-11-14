@@ -13,7 +13,7 @@ import soundfile as sf
 from haru import DuplexSession
 
 
-def replay(model, user, *, config, reference=None, system_prompt=''):
+def replay(model, user, *, config, reference=None, system_prompt='',feedback_head=None):
     """Replay mono 24 kHz PCM with the same frame alignment as haru-inference.
 
     Output frame t is generated before consuming input frame t. The final input
@@ -33,7 +33,7 @@ def replay(model, user, *, config, reference=None, system_prompt=''):
     count = (len(user)+size-1)//size
     padded = np.pad(user, (0, count*size-len(user)))
     config = replace(config, max_frames=count)
-    session = DuplexSession(model, system_prompt, reference, config)
+    session = DuplexSession(model, system_prompt, reference, config,feedback_head=feedback_head)
     frames = [session.start()]
     for index in range(count-1):
         frames.append(session.step(padded[index*size:(index+1)*size]))
@@ -46,7 +46,8 @@ def replay(model, user, *, config, reference=None, system_prompt=''):
             'input_samples': len(user), 'padded_samples': len(padded)-len(user),
             'text': ''.join(f.text for f in frames).strip(),
             'frames': [{k: v for k, v in asdict(f).items() if k != 'audio'} for f in frames],
-            'config': asdict(config), 'system_prompt': system_prompt}
+            'config': asdict(config), 'system_prompt': system_prompt,
+            'feedback_mode':'generated_audio' if feedback_head is None else 'separate_frozen_head'}
 
 
 def save_replay(destination, result, *, provenance=None):

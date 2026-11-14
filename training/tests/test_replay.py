@@ -57,3 +57,45 @@ def test_replay_requires_explicit_seed_and_eval_model():
     with pytest.raises(ValueError): replay(session_model(), np.zeros(3200), config=DuplexConfig())
     model = session_model().train()
     with pytest.raises(ValueError): replay(model, np.zeros(3200), config=DuplexConfig(seed=7))
+
+
+def test_frozen_feedback_preserves_internal_stream_and_tokens_while_output_voice_changes():
+    from copy import deepcopy
+    from unittest.mock import patch
+    model=session_model()
+    feedback=deepcopy(model.head).eval().requires_grad_(False)
+    user=np.zeros(8*3200,np.float32)
+    config=DuplexConfig(seed=23,speak_first=True,codec_backend='torch')
+    def capture(**kwargs):
+        streams=[]
+        original=model.embed
+        def embed(*args,**named):
+            if len(args)==3:
+                streams.append(args[1].detach().clone())
+            return original(*args,**named)
+        with patch.object(model,'embed',side_effect=embed):
+            result=replay(model,user,config=config,**kwargs)
+        return result,streams
+    baseline,original=capture()
+    with torch.no_grad(): model.head.final.proj.weight.mul_(2)
+    adapted,changed=capture()
+    separated,retained=capture(feedback_head=feedback)
+    assert len(original)==len(retained)==7
+    for a,b in zip(original,retained): torch.testing.assert_close(a,b,atol=0,rtol=0)
+    assert any(not torch.equal(a,b) for a,b in zip(original,changed))
+    assert [f['token'] for f in separated['frames']]==[f['token'] for f in baseline['frames']]
+    assert not np.array_equal(separated['audio'],baseline['audio'])
+    assert separated['feedback_mode']=='separate_frozen_head'
+    assert baseline['feedback_mode']==adapted['feedback_mode']=='generated_audio'
+
+
+@pytest.mark.parametrize('invalid',['train','grad','shape'])
+def test_replay_rejects_invalid_feedback_before_any_audio(invalid):
+    from copy import deepcopy
+    from dataclasses import replace
+    model=session_model();feedback=deepcopy(model.head)
+    if invalid=='train': feedback.train()
+    elif invalid=='grad': next(feedback.parameters()).requires_grad_(True)
+    else: feedback.config=replace(feedback.config,latent_dim=32)
+    with pytest.raises(ValueError,match='feedback'):
+        replay(model,np.zeros(3200),config=DuplexConfig(seed=7),feedback_head=feedback)

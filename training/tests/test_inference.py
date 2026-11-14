@@ -141,3 +141,34 @@ def test_export_refuses_failed_midstep_or_changed_frozen_models(tmp_path):
     trainer._in_step = False
     next(trainer.model.codec.parameters()).data.add_(1)
     with pytest.raises(ValueError): export_inference(trainer, tmp_path/'frozen')
+
+
+@pytest.mark.parametrize('mode',['head','head_output'])
+def test_feedback_loader_keeps_original_head_separate_from_applied_voice_weights(tmp_path,monkeypatch,mode):
+    import haru.models.haru
+    from haru_training.inference import load_with_frozen_feedback
+    trainer=tiny_trainer(tmp_path/'train',mode);trainer.fit()
+    path=export_inference(trainer,tmp_path/'artifact')
+    original=tensor_digest(base().head.named_parameters())
+    monkeypatch.setattr(haru.models.haru.HaruModel,'from_pretrained',lambda *a,**k:base())
+    model,feedback=load_with_frozen_feedback(path,device='cpu',dtype=torch.float32)
+    assert tensor_digest(feedback.named_parameters())==original
+    assert tensor_digest(model.head.named_parameters())==tensor_digest(trainer.model.head.named_parameters())
+    assert tensor_digest(model.head.named_parameters())!=original
+    assert not feedback.training and not any(p.requires_grad for p in feedback.parameters())
+    assert all(a.data_ptr()!=b.data_ptr() for a,b in zip(feedback.parameters(),model.head.parameters()))
+
+
+@pytest.mark.parametrize('change',['lm_lora','projectors'])
+def test_feedback_loader_rejects_changes_to_lm_or_projectors_before_loading_base(tmp_path,monkeypatch,change):
+    import haru.models.haru
+    from haru_training.inference import load_with_frozen_feedback
+    trainer=tiny_trainer(tmp_path/'train','lm_lora' if change=='lm_lora' else 'head')
+    path=export_inference(trainer,tmp_path/'artifact')
+    if change=='projectors':
+        bundle=read_checkpoint(path);bundle['spec']['train_projectors']=True
+        path=write_checkpoint(tmp_path/'projectors',bundle)
+    def forbidden(*args,**kwargs): raise AssertionError('must reject before base download')
+    monkeypatch.setattr(haru.models.haru.HaruModel,'from_pretrained',forbidden)
+    with pytest.raises(ValueError,match='feedback'):
+        load_with_frozen_feedback(path,device='cpu',dtype=torch.float32)

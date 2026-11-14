@@ -20,8 +20,8 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-haru-speech = { path = "../haru" }
 torch = { index = "pytorch-cu128" }
+haru-speech = { path = "../haru", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

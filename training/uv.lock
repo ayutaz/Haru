@@ -277,7 +277,7 @@ wheels = [
 
 [[package]]
 name = "haru-speech"
-source = { directory = "../haru" }
+source = { editable = "../haru" }
 dependencies = [
     { name = "aiohttp" },
     { name = "huggingface-hub" },
@@ -331,7 +331,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "haru-speech", directory = "../haru" },
+    { name = "haru-speech", editable = "../haru" },
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "peft", specifier = ">=0.21.3" },
     { name = "scipy", specifier = ">=1.18.1" },
