@@ -97,11 +97,9 @@ def validate_cohort(rows, root, *, protected_source_ids):
     return results
 
 
-def dialogue_sequence(row, model_latents, user_latents, system_ids, reference, pad_id, eop_id):
-    """Use separately encoded synchronous channels and explicit timed text chunks."""
-    if model_latents.ndim != 2 or user_latents.shape != model_latents.shape:
-        raise ValueError('dialogue channels require matching latent frames')
-    spans = _timeline(row, len(model_latents)/7.5)
+def validate_text_chunks(row, frames, pad_id, eop_id):
+    """Check timing and collisions without loading a codec or producing teachers."""
+    spans = _timeline(row, frames/7.5)
     chunks = []
     for chunk in row.get('model_chunks', []):
         start, tokens = chunk['start_frame'], chunk['tokens']
@@ -113,6 +111,13 @@ def dialogue_sequence(row, model_latents, user_latents, system_ids, reference, p
         chunks.append(TextChunk(start, tokens))
     if not chunks:
         raise ValueError('explicit timed model text chunks are required')
-    tokens = align_text(len(model_latents), chunks, pad_id, eop_id)
+    return align_text(frames, chunks, pad_id, eop_id)
+
+
+def dialogue_sequence(row, model_latents, user_latents, system_ids, reference, pad_id, eop_id):
+    """Use separately encoded synchronous channels and explicit timed text chunks."""
+    if model_latents.ndim != 2 or user_latents.shape != model_latents.shape:
+        raise ValueError('dialogue channels require matching latent frames')
+    tokens = validate_text_chunks(row, len(model_latents), pad_id, eop_id)
     return make_sequence(row['id'], system_ids, reference, model_latents, user_latents,
                          tokens, pad_id, eop_id)
