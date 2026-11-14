@@ -119,12 +119,15 @@ def _apply(model, bundle, spec, base_model, base_revision):
     with torch.no_grad():
         for name, value in weights.items():
             selected[name].copy_(value)
+    model.inference_feedback_mode=spec.feedback_mode
     return model.eval().requires_grad_(False)
 
 
 def apply_inference(model, path, *, base_model, base_revision):
     """Apply to a fresh configure_trainable model; reject mismatches before copy."""
     bundle, spec = _read(path)
+    if spec.feedback_mode=='separate_frozen_head':
+        raise ValueError('artifact requires the frozen feedback loader')
     return _apply(model, bundle, spec, base_model, base_revision)
 
 
@@ -138,6 +141,8 @@ def load_inference(path, *, device, dtype=None, base_directory=None):
     from haru import HaruModel
 
     bundle, spec = _read(path)
+    if spec.feedback_mode=='separate_frozen_head':
+        raise ValueError('artifact requires the frozen feedback loader')
     model = HaruModel.from_pretrained(base_directory or spec.base_model,
         revision=spec.base_revision, device=device, dtype=dtype)
     configure_trainable(model, TrainingConfig(mode=spec.mode, lora_rank=spec.lora_rank,
@@ -163,4 +168,6 @@ def load_with_frozen_feedback(path, *, device, dtype=None, base_directory=None):
         revision=spec.base_revision,device=device,dtype=dtype)
     feedback=deepcopy(model.head).eval().requires_grad_(False)
     configure_trainable(model,TrainingConfig(mode=spec.mode))
-    return _apply(model,bundle,spec,spec.base_model,spec.base_revision),feedback
+    _apply(model,bundle,spec,spec.base_model,spec.base_revision)
+    model.inference_feedback_mode='separate_frozen_head'
+    return model,feedback

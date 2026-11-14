@@ -73,6 +73,8 @@ class DuplexSession:
         model is unchanged. Audible pronunciation still needs evaluation.
         """
         self.model = model
+        if getattr(model, "inference_feedback_mode", None) == "separate_frozen_head" and feedback_head is None:
+            raise ValueError("this voice artifact requires its frozen feedback head")
         if feedback_head is not None and (
             not isinstance(feedback_head, torch.nn.Module)
             or not callable(getattr(feedback_head, "sample", None))

@@ -45,8 +45,13 @@ class RunSpec:
     guidance_max: float = 2.
     schema_version: int = 1
     optimizer_precision: str = 'native'
+    feedback_mode: str = 'generated_audio'
 
     def __post_init__(self):
+        if (self.feedback_mode not in ('generated_audio','separate_frozen_head')
+                or (self.feedback_mode=='separate_frozen_head'
+                    and (self.mode not in ('head','head_output') or self.train_projectors))):
+            raise ValueError('invalid feedback mode or changes to the preserved conversation path')
         if self.optimizer_precision not in ('native','fp32_master'):
             raise ValueError('invalid optimizer precision')
         positive = ('max_steps', 'micro_batch_size', 'accumulation_steps',
