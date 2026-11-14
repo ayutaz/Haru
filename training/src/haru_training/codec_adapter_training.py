@@ -227,7 +227,24 @@ class CodecTrainer:
                 raise ValueError('resume device differs')
             adapter = get_adapter(self.model.codec)
             optimizer = MasterAdamW(adapter.parameters(), lr=self.spec.learning_rate)
-            optimizer.load_state_dict(bundle['optimizer'])
+            saved_optimizer=bundle['optimizer']
+            groups=saved_optimizer['param_groups']
+            expected_groups=optimizer.state_dict()['param_groups']
+            if groups != expected_groups:
+                raise ValueError('optimizer groups or hyperparameters differ')
+            expected_ids=groups[0]['params'] if bundle['step'] else []
+            if set(saved_optimizer['state'])!=set(expected_ids):
+                raise ValueError('optimizer state is incomplete')
+            for index,parameter in zip(groups[0]['params'],adapter.parameters()):
+                if not bundle['step']:break
+                values=saved_optimizer['state'][index]
+                if (set(values)!={'step','exp_avg','exp_avg_sq','master_param'}
+                        or not all(torch.is_tensor(v) and torch.isfinite(v).all() for v in values.values())
+                        or values['step'].numel()!=1 or float(values['step'])!=bundle['step']
+                        or any(values[key].shape!=parameter.shape or values[key].dtype!=torch.float32
+                               for key in ('exp_avg','exp_avg_sq','master_param'))):
+                    raise ValueError('optimizer moments, master weights, or step are invalid')
+            optimizer.load_state_dict(saved_optimizer)
             staged = {k:v.to(self.model.codec.device) for k,v in artifact['weights'].items()}
         except (KeyError, TypeError, RuntimeError, ValueError) as error:
             raise ValueError('invalid or incompatible codec training checkpoint') from error

@@ -82,14 +82,65 @@ def test_resume_rejects_changed_data_or_spec_before_mutation(tmp_path):
     from haru_training.codec_adapter import get_adapter
     from haru_training.checkpoint import read_checkpoint,write_checkpoint
     original=trainer();original.fit(until_step=1);original.save(tmp_path/'checkpoint')
-    for mutation in ('data_sha256','spec','optimizer','rng'):
+    for mutation in ('data_sha256','spec','optimizer','optimizer_nan','rng'):
         bundle=read_checkpoint(tmp_path/'checkpoint')
         if mutation=='data_sha256':bundle[mutation]='0'*64
         elif mutation=='spec':bundle[mutation]['learning_rate']=.9
         elif mutation=='optimizer':bundle[mutation]['param_groups'][0]['params'] = []
+        elif mutation=='optimizer_nan':
+            next(iter(bundle['optimizer']['state'].values()))['exp_avg'].fill_(float('nan'))
         else:bundle['rng']=torch.zeros(2,dtype=torch.uint8)
         path=write_checkpoint(tmp_path/mutation,bundle)
         target=trainer();before=deepcopy(get_adapter(target.model.codec).state_dict())
         with pytest.raises(ValueError):target.restore(path)
         assert target.step == 0
         for key,value in before.items():assert torch.equal(value,get_adapter(target.model.codec).state_dict()[key])
+
+
+def test_content_term_backpropagates_through_frozen_encoder_and_detects_frozen_edits(tmp_path):
+    from haru_training.codec_adapter_training import paired_loss
+    content=Content().eval().requires_grad_(False)
+    wave=torch.randn(6400,requires_grad=True)
+    loss=paired_loss(wave,pair(),content=content,content_weight=.1)['content']
+    loss.backward()
+    assert wave.grad.abs().sum()>0 and all(p.grad is None for p in content.parameters())
+    state=trainer()
+    with torch.no_grad():state.model.codec.decoder.head.bias.add_(.1)
+    with pytest.raises(ValueError,match='frozen'):state.save(tmp_path/'bad')
+
+
+def test_resume_in_fresh_python_process_and_inference_reload(tmp_path):
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    from haru_training.checkpoint import read_checkpoint
+    from haru_training.codec_adapter import get_adapter
+    state=trainer();state.fit(until_step=1);state.save(tmp_path/'step1')
+    state.fit()
+    root=Path(__file__).parents[2]
+    script='''
+import sys,torch
+from pathlib import Path
+from test_codec_adapter_training import trainer
+from test_codec_adapter_checkpoint import base
+from haru_training.codec_adapter import get_adapter
+from haru_training.codec_adapter_inference import export_adapter,apply_adapter
+from haru_training.checkpoint import write_checkpoint
+p=Path(sys.argv[1]);t=trainer();t.restore(p/'step1');t.fit()
+export_adapter(t.model,p/'inference',**t._identity())
+model=base();apply_adapter(model,p/'inference',base_model=t.spec.base_model,base_revision=t.spec.base_revision)
+z=torch.ones(1,2,64)
+assert torch.equal(t.model.codec.decode(z),model.codec.decode(z))
+write_checkpoint(p/'child',dict(weights=get_adapter(t.model.codec).state_dict(),optimizer=t.optimizer.state_dict(),rng=t.generator.get_state(),order=t.order,cursor=t.cursor))
+'''
+    env={**os.environ,'PYTHONPATH':os.pathsep.join(str(root/p) for p in ('training/tests','training/src','haru'))}
+    result=subprocess.run([sys.executable,'-X','utf8','-c',script,str(tmp_path)],env=env,
+        capture_output=True,text=True,timeout=90)
+    assert result.returncode==0,result.stderr
+    child=read_checkpoint(tmp_path/'child')
+    for k,v in get_adapter(state.model.codec).state_dict().items():assert torch.equal(v,child['weights'][k])
+    for k,v in state.optimizer.state_dict()['state'].items():
+        for name,value in v.items():assert torch.equal(value,child['optimizer']['state'][k][name])
+    assert state.cursor==child['cursor'] and state.order==child['order']
+    assert torch.equal(state.generator.get_state(),child['rng'])
