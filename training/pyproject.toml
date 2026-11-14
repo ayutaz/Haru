@@ -32,6 +32,9 @@ markers = ["cuda: requires CUDA on an explicitly provisioned vast.ai instance"]
 dev = [
     "pytest>=9.2.0",
 ]
+evaluation = [
+    "faster-whisper>=1.2.1",
+]
 
 [build-system]
 requires = ["setuptools>=77"]
