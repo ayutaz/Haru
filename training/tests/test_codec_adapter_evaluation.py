@@ -74,3 +74,24 @@ def test_blind_reference_requires_an_untrained_target_recording(tmp_path,bad):
         write_blind_html(p,ref,reference_sha256=digest,seed=1,reference_info=reference,
             training_manifest=tmp_path/'training-inputs.json')
     assert not (p/'listen.html').exists()
+
+
+def test_collection_contains_three_questions_and_no_condition_or_score_leaks(tmp_path):
+    from haru_training.codec_adapter_evaluation import write_blind_collection
+    entries=[]
+    for i in range(3):
+        folder=tmp_path/str(i);folder.mkdir()
+        entries.append(dict(id=f'dev-{i}',question='<質問>',directory=comparison(folder)))
+    ref=tmp_path/'ref.wav';sf.write(ref,np.ones(3200)*.1,24000)
+    digest=sha256(ref.read_bytes()).hexdigest()
+    args=dict(reference_sha256=digest,seed=7,training_manifest=tmp_path/'0/training-inputs.json',
+        reference_info=dict(group_id='reference-group',split='reference',speaker='target',wav_sha256=digest))
+    page=write_blind_collection(tmp_path/'collection',entries,ref,**args)
+    content=page.read_text(encoding='utf-8')
+    assert content.count('<audio')==7 and content.count('&lt;質問&gt;')==3
+    assert '<質問>' not in content and 'baseline' not in content and 'candidate' not in content
+    assert 'cosine' not in content and '両方似ていない' in content
+    assert (page.parent/'answer-key.json').is_file()
+    key=json.loads((page.parent/'answer-key.json').read_text(encoding='utf-8'))
+    assert len({tuple(row['order']) for row in key['cases']})>1
+    with pytest.raises(FileExistsError):write_blind_collection(tmp_path/'collection',entries,ref,**args)

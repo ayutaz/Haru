@@ -137,3 +137,54 @@ def write_blind_html(path,reference,*,reference_sha256,seed,reference_info,train
         voice_similarity_confirmed=False)),encoding='utf-8')
     (path/'listen.html').write_text(html,encoding='utf-8')
     return path/'listen.html'
+
+
+def write_blind_collection(destination,cases,reference,**reference_args):
+    """One self-contained three-question page; all condition keys remain separate."""
+    from html import escape
+    from io import BytesIO
+    import soundfile as sf
+    destination=Path(destination)
+    if destination.exists():raise FileExistsError('listening collection already exists')
+    if (len(cases)!=3 or len({r['id'] for r in cases})!=3
+            or len({Path(r['directory']).resolve() for r in cases})!=3):
+        raise ValueError('listening collection needs three distinct frozen cases')
+    infos=[_verify(r['directory']) for r in cases]
+    for key in ('base_revision','target_speaker','codec_sha256','adapter_sha256','dataset_input_manifest_sha256'):
+        if len({info[key] for info in infos})!=1:
+            raise ValueError('collection conditions or training membership differ')
+    for row in cases:
+        folder=Path(row['directory'])
+        if (folder/'listen.html').exists() or (folder/'answer-key.json').exists():
+            raise FileExistsError('individual listening comparison already exists')
+    keys=[]
+    for index,row in enumerate(cases):
+        folder=Path(row['directory'])
+        write_blind_html(folder,reference,**dict(reference_args,seed=reference_args['seed']+index))
+        keys.append(json.loads((folder/'answer-key.json').read_text(encoding='utf-8')))
+    def player(file):
+        audio,rate=sf.read(file,dtype='float32')
+        if audio.ndim!=1 or not len(audio) or not np.isfinite(audio).all():
+            raise ValueError('listening needs finite mono audio')
+        rms=float(np.sqrt(np.mean(audio.astype('float64')**2)))
+        gain=min(.1/max(rms,1e-12),.99/max(float(np.abs(audio).max()),1e-12))
+        buffer=BytesIO();sf.write(buffer,audio*gain,rate,format='WAV',subtype='PCM_16')
+        return '<audio controls preload="metadata" src="data:audio/wav;base64,'+base64.b64encode(buffer.getvalue()).decode('ascii')+'"></audio>'
+    options='<option>未確認</option><option>A</option><option>B</option><option>差が分からない</option><option>両方似ていない</option><option>判定できない</option>'
+    html='<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3問の音声比較</title>'
+    html+='<style>body{max-width:800px;margin:2em auto;padding:0 1em;font-family:sans-serif;line-height:1.7;background:#f6f7fa;color:#182030}section{background:white;border:1px solid #dae0e9;border-radius:12px;margin:1.2em 0;padding:1.2em}audio{width:100%}label{display:block;margin:.7em 0}select{margin-left:1em;padding:.3em}summary{cursor:pointer}</style>'
+    html+='<h1>3問の音声比較</h1><p>本人の参照を聴いてからAとBを比較してください。声の近さと聞き取りやすさを別々に確認します</p><section><h2>本人の参照音声</h2>'+player(reference)+'</section>'
+    for index,(row,info,key) in enumerate(zip(cases,infos,keys),1):
+        html+='<section><h2>'+str(index)+'. '+escape(row['question'])+'</h2>'
+        for label,side in zip(('A','B'),key['order']):
+            html+='<h3>'+label+'</h3>'+player(Path(row['directory'])/side/'response.wav')
+            html+='<label>'+label+'の内容<select><option>未確認</option><option>聞き取れる</option><option>一部不明</option><option>意味が分からない</option><option>判定できない</option></select></label>'
+        html+='<label>本人の声に近い方<select>'+options+'</select></label>'
+        html+='<details><summary>聴いた後に生成textを確認</summary><p>'+escape(info['text'])+'</p></details></section>'
+    html+='<p>再生用の音声には同じ方式で音量調整を行っています。元の録音と条件の対応表は別に保存しています。選択内容はこのページから送信されません</p></html>'
+    destination.mkdir(parents=True)
+    (destination/'listen.html').write_text(html,encoding='utf-8')
+    (destination/'answer-key.json').write_text(json.dumps(dict(cases=[dict(id=r['id'],**key) for r,key in zip(cases,keys)],
+        normalization=dict(rms_target=.1,peak_limit=.99,subtype='PCM_16',pitch_or_speed_changed=False),
+        voice_similarity_confirmed=False),ensure_ascii=False,indent=2),encoding='utf-8')
+    return destination/'listen.html'
