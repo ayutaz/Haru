@@ -67,6 +67,22 @@ def test_dataset_identity_detects_changed_content_and_order():
     assert before != dataset_fingerprint(first)
 
 
+def test_validation_subset_is_heldout_and_preserves_rng_modes_and_data(tmp_path):
+    trainer = build(tmp_path)
+    trainer.model.train()
+    original = trainer.validation
+    before = torch.get_rng_state().clone()
+    chosen = [original[0].record_id, original[2].record_id]
+    result = trainer.validate(record_ids=chosen)
+    assert result['audio_count'] == 3 and result['text_count'] == 3
+    assert trainer.validation is original and trainer.model.training
+    assert torch.equal(before, torch.get_rng_state())
+    assert result == trainer.validate(record_ids=list(reversed(chosen)))
+    for ids in ([], [chosen[0], chosen[0]], [trainer.train[0].record_id], ['test-0']):
+        with pytest.raises(ValueError, match='validation'):
+            trainer.validate(record_ids=ids)
+
+
 def test_trainer_rejects_wrong_dataset_and_split_leakage_before_update(tmp_path):
     train, val = records(), records('val')
     contract = spec(train, val)

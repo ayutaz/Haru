@@ -242,7 +242,14 @@ class Trainer:
         if hasattr(self.model, 'codec'):
             self.model.codec.eval()
 
-    def validate(self):
+    def validate(self, *, record_ids=None):
+        records = list(enumerate(self.validation))
+        if record_ids is not None:
+            ids = list(record_ids)
+            known = {r.record_id for r in self.validation}
+            if not ids or len(set(ids)) != len(ids) or not set(ids) <= known:
+                raise ValueError('validation subset must contain unique held-out validation IDs')
+            records = [(index, row) for index, row in records if row.record_id in set(ids)]
         modes = {module: module.training for module in self.model.modules()}
         rng = capture_rng(self.model)
         totals = [0., 0.]
@@ -250,10 +257,11 @@ class Trainer:
         try:
             self.model.eval()
             with torch.no_grad():
-                for start in range(0, len(self.validation), self.spec.micro_batch_size):
-                    batch = self.collate(self.validation[start:start+self.spec.micro_batch_size])
+                for start in range(0, len(records), self.spec.micro_batch_size):
+                    group = records[start:start+self.spec.micro_batch_size]
+                    batch = self.collate([row for _, row in group])
                     number = self._counts(batch)
-                    losses = self.loss_fn(self.model, batch, seed=self.spec.seed+start)
+                    losses = self.loss_fn(self.model, batch, seed=self.spec.seed+group[0][0])
                     self._check(losses)
                     for i, key in enumerate(('text_loss', 'audio_loss')):
                         totals[i] += float(losses[key])*number[i]
@@ -264,7 +272,8 @@ class Trainer:
         metrics = dict(zip(('text_loss', 'audio_loss'),
                            (total/max(1, n) for total, n in zip(totals, counts))))
         metrics.update(text_count=counts[0], audio_count=counts[1])
-        self._event('validation', **metrics)
+        self._event('validation', **metrics,
+                    **({'record_ids': [row.record_id for _, row in records]} if record_ids is not None else {}))
         return metrics
 
     def fit(self, *, until_step=None):
