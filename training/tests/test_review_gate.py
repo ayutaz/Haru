@@ -40,3 +40,29 @@ def test_review_timeout_keeps_request_and_does_not_fabricate_acceptance(tmp_path
     with pytest.raises(TimeoutError): gate({'step':1,'texts':{'dialogue':'birthday'}})
     assert (tmp_path/'step-00000001/request.json').is_file()
     assert not (tmp_path/'step-00000001/decision.json').exists()
+
+
+@pytest.mark.parametrize('ratings,severe,accepted,valid',[
+    ({'food':2,'event':1},False,True,True),
+    ({'food':1,'event':1},False,True,False),
+    ({'food':0,'event':2},False,True,False),
+    ({'food':2,'event':1},True,True,False),
+    ({'food':2},False,True,False),
+    ({'food':True,'event':2},False,True,False),
+    ({'food':3,'event':1},False,True,False),
+    ({'food':0,'event':0},True,False,True),
+])
+def test_scored_review_cannot_approve_missing_or_regressed_case_ratings(tmp_path,ratings,severe,accepted,valid):
+    from haru_training.review import FileReviewGate
+    def wait(seconds):
+        request=json.loads((tmp_path/'step-00000001/request.json').read_text())
+        decision={key:request[key] for key in ('run_id','step','observation_sha256')}
+        decision.update(accepted=accepted,reason='operator reviewed input and response texts',
+                        ratings=ratings,new_severe_failure=severe)
+        (tmp_path/'step-00000001/decision.json').write_text(json.dumps(decision))
+    gate=FileReviewGate(tmp_path,run_id='score-run',timeout_seconds=2,wait=wait,
+                       score_baseline={'food':2,'event':1})
+    if valid:
+        assert gate({'step':1})['accepted']==accepted
+    else:
+        with pytest.raises(ValueError,match='rating|score'): gate({'step':1})
