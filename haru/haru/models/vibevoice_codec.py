@@ -221,11 +221,13 @@ class CodecStream:
     def __init__(self, codec: VibeVoiceCodec, batch: int = 1):
         self.codec = codec
         self.batch = batch
+        self._adapter_generation = getattr(codec, "_codec_adapter_generation", 0)
         self.encoder_state = codec.encoder.init_state(batch)
         self.decoder_state = codec.decoder.init_state(batch)
 
     def reset(self, rows: torch.Tensor | None = None) -> None:
         """Clear all rows, or only the conversations at ``rows``."""
+        self._check_generation()
         for state in (*self.encoder_state, *self.decoder_state):
             if rows is None:
                 state.zero_()
@@ -235,6 +237,7 @@ class CodecStream:
     @torch.no_grad()
     def encode(self, audio: torch.Tensor) -> torch.Tensor:
         """``[B, n * 3200]`` new audio -> latent means ``[B, n, D]``."""
+        self._check_generation()
         if audio.shape[-1] == 0 or audio.shape[-1] % self.codec.config.frame_samples:
             raise ValueError("streaming encode takes whole frames")
         x = audio.to(self.codec.device, self.codec.dtype)[:, None]
@@ -244,9 +247,14 @@ class CodecStream:
     @torch.no_grad()
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
         """``[B, n, D]`` new latents -> audio ``[B, n * 3200]``."""
+        self._check_generation()
         x = latents.to(self.codec.device, self.codec.dtype)
         audio, self.decoder_state = self.codec.decoder(x, self.decoder_state)
         return audio
+
+    def _check_generation(self) -> None:
+        if self._adapter_generation != getattr(self.codec, "_codec_adapter_generation", 0):
+            raise RuntimeError("codec adapter changed after stream construction; create a new stream")
 
 
 CODEC_BACKENDS = ("torch", "triton", "auto")
@@ -265,6 +273,8 @@ def open_stream(codec: VibeVoiceCodec, batch: int = 1, backend: str = "torch", n
 
     if backend not in CODEC_BACKENDS:
         raise ValueError(f"unknown codec backend {backend!r}")
+    if getattr(codec, "_codec_adapter_attached", False) and backend != "torch":
+        raise ValueError("codec adapter requires the explicit torch backend")
     usable = codec_triton.is_available() and codec.device.type == "cuda" and codec.dtype == torch.bfloat16
     if backend == "triton" and not usable:
         raise RuntimeError("the Triton codec backend needs triton and a bfloat16 codec on CUDA")
