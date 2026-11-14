@@ -63,7 +63,7 @@ def test_rental_is_explicit_and_budget_bound(monkeypatch):
     assert calls[0].method == 'PUT'
     assert calls[0].full_url.endswith('/asks/11/')
     assert json.loads(calls[0].data)['label'] == 'test'
-    assert json.loads(calls[0].data)['runtype'] == 'ssh_direc ssh_proxy'
+    assert json.loads(calls[0].data)['runtype'] == 'ssh_direct'
 
 
 def test_invalid_module_name_cannot_silently_train_nothing():

@@ -70,7 +70,7 @@ class VastClient:
             raise ValueError('rental does not fit explicit execution limits')
         data = self.request('PUT', f'/asks/{int(offer_id)}/', {
             'client_id': 'me', 'image': image, 'disk': disk, 'label': label,
-            'runtype': 'ssh_direc ssh_proxy', 'target_state': 'running', 'cancel_unavail': True})
+            'runtype': 'ssh_direct', 'target_state': 'running', 'cancel_unavail': True})
         if not data.get('success') or not isinstance(data.get('new_contract'), int):
             raise RuntimeError('Vast did not confirm an instance ID; reconcile before retrying')
         return data['new_contract']
