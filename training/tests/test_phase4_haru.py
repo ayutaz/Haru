@@ -38,7 +38,7 @@ def tiny_trainer(output,mode):
     return Trainer(model,train,val,spec,output)
 
 
-@pytest.mark.parametrize('mode',['head','lm_lora'])
+@pytest.mark.parametrize('mode',['head','lm_lora','head_output'])
 def test_tiny_haru_forward_and_adam_resume_exactly_in_another_process(tmp_path,mode):
     full=tiny_trainer(tmp_path/'full',mode)
     frozen=full.frozen_digest

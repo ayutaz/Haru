@@ -32,7 +32,7 @@ def batch():
                       torch.randn(2, 64), torch.tensor([7, 0]), 0, 1)], 0)
 
 
-@pytest.mark.parametrize('mode', ['head', 'lm_lora'])
+@pytest.mark.parametrize('mode', ['head', 'lm_lora', 'head_output'])
 def test_losses_reach_selected_modules_and_frozen_weights_do_not_change(mode):
     torch.manual_seed(4)
     model = tiny_model()
@@ -46,6 +46,9 @@ def test_losses_reach_selected_modules_and_frozen_weights_do_not_change(mode):
     gradients = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
     assert gradients and all(torch.isfinite(g).all() for g in gradients.values())
     assert any(n.startswith('head.') and g.abs().sum() > 0 for n, g in gradients.items())
+    if mode=='head_output':
+        assert set(summary['names'])=={'head.final.proj.weight'}
+        assert set(gradients)==set(summary['names'])
     if mode == 'lm_lora':
         assert any('lora_' in n and g.abs().sum() > 0 for n, g in gradients.items())
         assert any('audio_proj' in n and g.abs().sum() > 0 for n, g in gradients.items())
@@ -55,6 +58,15 @@ def test_losses_reach_selected_modules_and_frozen_weights_do_not_change(mode):
     changed = [n for n, p in model.named_parameters() if not torch.equal(before[n], p)]
     assert changed and all(dict(model.named_parameters())[n].requires_grad for n in changed)
     assert not model.codec.training
+
+
+def test_output_only_mode_rejects_projector_updates_and_preserves_other_head_layers():
+    with pytest.raises(ValueError,match='output'):
+        TrainingConfig(mode='head_output',train_projectors=True)
+    model=tiny_model()
+    summary=configure_trainable(model,TrainingConfig(mode='head_output'))
+    assert summary['trainable']==sum(p.numel() for p in model.head.final.proj.parameters())
+    assert all(not p.requires_grad for name,p in model.named_parameters() if not name.startswith('head.final.proj.'))
 
 
 def test_padding_cannot_change_valid_hidden_states_and_sampling_is_seeded():

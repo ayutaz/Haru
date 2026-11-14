@@ -15,8 +15,10 @@ class TrainingConfig:
     max_dollars: float = 100.0
 
     def __post_init__(self):
-        if self.mode not in {'head', 'lm_lora'}:
-            raise ValueError('mode must be head or lm_lora')
+        if self.mode not in {'head', 'lm_lora', 'head_output'}:
+            raise ValueError('mode must be head, lm_lora or head_output')
+        if self.mode=='head_output' and self.train_projectors:
+            raise ValueError('output-only mode cannot update audio projectors')
         if isinstance(self.lora_rank, bool) or self.lora_rank <= 0:
             raise ValueError('lora_rank must be positive')
         if not 1 <= self.guidance_max <= 2 or not 0 <= self.condition_dropout < 1:
@@ -29,12 +31,18 @@ def configure_trainable(model, config: TrainingConfig) -> dict:
     for name in ('head', 'codec', 'lm', 'model_audio_proj', 'user_audio_proj'):
         if not hasattr(model, name):
             raise ValueError(f'model is missing required module: {name}')
+    output=getattr(getattr(model.head,'final',None),'proj',None)
+    if config.mode=='head_output' and not hasattr(output,'parameters'):
+        raise ValueError('output-only mode requires the Haru final projection')
     model.requires_grad_(False)
     if config.mode == 'lm_lora':
         from peft import LoraConfig, get_peft_model
         model.lm = get_peft_model(model.lm, LoraConfig(r=config.lora_rank,
             lora_alpha=2 * config.lora_rank, lora_dropout=0, bias='none', target_modules='all-linear'))
-    model.head.requires_grad_(True)
+    if config.mode=='head_output':
+        output.requires_grad_(True)
+    else:
+        model.head.requires_grad_(True)
     if config.train_projectors:
         model.model_audio_proj.requires_grad_(True)
         model.user_audio_proj.requires_grad_(True)

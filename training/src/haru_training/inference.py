@@ -54,8 +54,9 @@ def _selected(model, spec):
             raise ValueError('LoRA configuration differs from inference contract')
     elif peft:
         raise ValueError('head-only artifact requires an unwrapped LM')
+    head_prefix='head.final.proj.' if spec.mode=='head_output' else 'head.'
     expected = {name for name, _ in model.named_parameters()
-                if name.startswith('head.') or
+                if name.startswith(head_prefix) or
                 (spec.train_projectors and name.startswith(('model_audio_proj.', 'user_audio_proj.'))) or
                 (spec.mode == 'lm_lora' and name.startswith('lm.') and '.lora_' in name)}
     selected = {name: value for name, value in model.named_parameters() if value.requires_grad}

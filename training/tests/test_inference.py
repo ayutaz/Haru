@@ -36,7 +36,7 @@ def probe(model):
         return model.logits(hidden).detach(), model.head.sample(hidden[:, -1], noise, 1.5).detach()
 
 
-@pytest.mark.parametrize('mode', ['head', 'lm_lora'])
+@pytest.mark.parametrize('mode', ['head', 'lm_lora', 'head_output'])
 def test_export_and_apply_reproduce_inference_and_fresh_base_restores_all_parts(tmp_path, mode):
     trainer = tiny_trainer(tmp_path/'train', mode)
     original = tensor_digest(base().named_parameters())
@@ -91,7 +91,7 @@ def test_rejected_artifacts_do_not_mutate_model(tmp_path, bad):
     assert modes == {n: m.training for n, m in model.named_modules()}
 
 
-@pytest.mark.parametrize('mode', ['head', 'lm_lora'])
+@pytest.mark.parametrize('mode', ['head', 'lm_lora', 'head_output'])
 def test_artifact_loads_in_a_fresh_process_without_optimizer_or_training_records(tmp_path, mode):
     trainer = tiny_trainer(tmp_path/'train', mode)
     trainer.fit()
