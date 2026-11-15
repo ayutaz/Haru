@@ -46,6 +46,34 @@ def transcribe_comparison(path, generated_text, recognizer, *, expected_sha256):
     return result
 
 
+def turn_response_text(response, *, user_end_seconds):
+    """Split replay text by how much user PCM the model had actually consumed.
+
+    Frame index is playback time; Frame.seconds is compute time. A chunk may
+    span a spoken turn boundary, so this is text timing, not forced alignment.
+    The caller supplies the measured user-turn end and retains its provenance.
+    """
+    rate, size, samples = (response[k] for k in ('sample_rate', 'frame_samples', 'input_samples'))
+    frames = response['frames']
+    if (any(type(x) is not int or x <= 0 for x in (rate, size, samples))
+            or not math.isfinite(user_end_seconds) or not 0 <= user_end_seconds <= samples / rate
+            or len(frames) != (samples + size - 1) // size
+            or any(f['index'] != i or not isinstance(f['text'], str) for i, f in enumerate(frames))):
+        raise ValueError('invalid replay or user-turn timing')
+    end_sample = user_end_seconds * rate
+    before, after = [], []
+    first = None
+    for frame in frames:
+        observed = min(frame['index'] * size, samples)
+        (after if observed >= end_sample else before).append(frame['text'])
+        if first is None and frame['text'].strip():
+            first = frame['index'] * size / rate
+    return dict(text_before_user_end=''.join(before).strip(), text_after_user_end=''.join(after).strip(),
+                first_text_seconds=first, user_turn_fully_observed=(len(frames)-1)*size >= end_sample,
+                question_answered=None, voice_similarity_confirmed=False,
+                scope='Playback-frame text timing only; relevance, audibility and voice identity are not assessed')
+
+
 def question_audio(audio, sample_rate, *, user_channel, start_seconds, end_seconds,
                    lead_seconds=.4, tail_seconds=8.):
     """Keep one recorded user turn, then silence, rather than a read-speech probe."""

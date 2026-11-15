@@ -77,3 +77,34 @@ def test_invalid_question_input_fails_before_rendering(changes):
     from haru_training.speech_quality import question_audio
     args=dict(user_channel=1,start_seconds=2.,end_seconds=3.);args.update(changes)
     with pytest.raises(ValueError):question_audio(np.ones((100,2),dtype='float32'),10,**args)
+
+
+def test_turn_response_uses_consumed_audio_not_compute_time_or_opening_greeting():
+    from haru_training.speech_quality import turn_response_text
+    response=dict(sample_rate=24000,frame_samples=3200,input_samples=16000,
+        frames=[dict(index=i,text=text,seconds=999-i) for i,text in enumerate(
+            ['こんにちは。','', '聞いています。','散歩は','どうですか。'])])
+    result=turn_response_text(response,user_end_seconds=.4)
+    assert result['text_before_user_end']=='こんにちは。聞いています。'
+    assert result['text_after_user_end']=='散歩はどうですか。'
+    assert result['first_text_seconds']==0
+    assert result['user_turn_fully_observed'] is True
+    assert result['question_answered'] is None
+    assert result['voice_similarity_confirmed'] is False
+
+
+def test_turn_response_does_not_claim_the_last_unconsumed_frame_was_heard():
+    from haru_training.speech_quality import turn_response_text
+    response=dict(sample_rate=24000,frame_samples=3200,input_samples=6400,
+        frames=[dict(index=0,text='はい'),dict(index=1,text='。')])
+    result=turn_response_text(response,user_end_seconds=.2)
+    assert result['user_turn_fully_observed'] is False
+    assert result['text_after_user_end']==''
+
+
+@pytest.mark.parametrize('end,indices',[(float('nan'),[0,1]),(-1,[0,1]),(.4,[0,1]),(.1,[1,0])])
+def test_turn_response_rejects_unusable_timing_evidence(end,indices):
+    from haru_training.speech_quality import turn_response_text
+    response=dict(sample_rate=24000,frame_samples=3200,input_samples=6400,
+                  frames=[dict(index=i,text='はい') for i in indices])
+    with pytest.raises(ValueError):turn_response_text(response,user_end_seconds=end)
