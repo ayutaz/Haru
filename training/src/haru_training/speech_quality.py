@@ -1,5 +1,6 @@
 """Real question inputs and independent ASR checks; no voice-quality claims."""
 from hashlib import sha256
+from copy import deepcopy
 import math
 from pathlib import Path
 import unicodedata
@@ -26,14 +27,44 @@ def transcript_comparison(generated_text, recognized_text):
             'scope':'ASR text agreement only; semantic coherence and voice identity are not assessed'}
 
 
+def _asr_pcm(path):
+    from .data import read_wave
+    return read_wave(path,sample_rate=16000).mean(axis=1,dtype=np.float32)
+
+
+def reuse_transcription(path, generated_text, cached, *, source, model, revision, settings):
+    """Reuse an observed transcript only for byte-identical recognizer input.
+
+    WAV container metadata can differ even when decoded samples are identical.
+    The old WAV hash and recognizer protocol still have to match their record.
+    No tolerance or audio similarity heuristic substitutes for exact PCM equality.
+    """
+    if (cached.get('generated_text')!=generated_text or cached.get('model')!=model
+            or cached.get('revision')!=revision or cached.get('settings')!=settings):
+        return None
+    source,path=Path(source),Path(path)
+    if sha256(source.read_bytes()).hexdigest()!=cached.get('wav_sha256'):
+        raise ValueError('cached transcription source differs from its recorded WAV hash')
+    before,after=_asr_pcm(source),_asr_pcm(path)
+    if not np.array_equal(before,after):return None
+    expected=transcript_comparison(generated_text,cached['recognized_text'])
+    if any(cached.get(k)!=v for k,v in expected.items()):
+        raise ValueError('cached transcription summary is inconsistent')
+    result=deepcopy(cached)
+    result['wav_sha256']=sha256(path.read_bytes()).hexdigest()
+    result['transcription_reuse']=dict(identical_asr_input_pcm=True,
+        source_wav_sha256=cached['wav_sha256'],input_pcm_sha256=sha256(after.tobytes()).hexdigest(),
+        sample_rate=16000,input_samples=len(after),scope='Exact recognizer input and protocol, not an approximate audio match')
+    return result
+
+
 def transcribe_comparison(path, generated_text, recognizer, *, expected_sha256):
     path=Path(path)
     actual=sha256(path.read_bytes()).hexdigest()
     if actual!=expected_sha256:raise ValueError('audio differs from the declared response')
-    from .data import read_wave
     # The ndarray interface expects 16 kHz mono PCM. Decode our WAVs with the
     # same reader as training, avoiding version-dependent PyAV file decoding.
-    samples=read_wave(path,sample_rate=16000).mean(axis=1,dtype=np.float32)
+    samples=_asr_pcm(path)
     segments,info=recognizer.transcribe(samples,language='ja',beam_size=5,
                                       condition_on_previous_text=False,vad_filter=True)
     rows=[{'start':s.start,'end':s.end,'text':s.text} for s in segments]
