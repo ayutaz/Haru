@@ -112,3 +112,20 @@ def test_small_training_requires_complete_hash_bound_independent_codec_gate():
         if mutation=='missing':changed['cases'].pop()
         if mutation=='held':changed['cases'][0]['status']='hold'
         with pytest.raises(ValueError):validate_training_gate(spec,changed,spec_sha256='a'*64,report_sha256='b'*64)
+
+
+def test_rank32_correction_changes_capacity_only_and_preserves_its_parent_gate(tmp_path):
+    import json
+    from hashlib import sha256
+    from haru_training.codec_adapter_diagnostic import validate_correction
+    parent=diagnostic(tmp_path)
+    path=tmp_path/'diagnostic.json';path.write_text(json.dumps(parent),encoding='utf-8')
+    correction=deepcopy(parent)
+    correction.update(kind='haru-codec-rank-correction',rank=32,
+        parent=dict(path=path.name,sha256=sha256(path.read_bytes()).hexdigest()))
+    assert validate_correction(correction,root=tmp_path)==correction
+    for field,value in [('rank',64),('training_ids',['x','y','z']),('learning_rate',.1),('max_steps',301)]:
+        changed=deepcopy(correction);changed[field]=value
+        with pytest.raises(ValueError):validate_correction(changed,root=tmp_path)
+    path.write_text('{}',encoding='utf-8')
+    with pytest.raises(ValueError):validate_correction(correction,root=tmp_path)
