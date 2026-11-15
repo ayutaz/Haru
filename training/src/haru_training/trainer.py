@@ -46,8 +46,13 @@ class RunSpec:
     schema_version: int = 1
     optimizer_precision: str = 'native'
     feedback_mode: str = 'generated_audio'
+    preservation_weight: float = 0.
 
     def __post_init__(self):
+        if (type(self.preservation_weight) not in (int,float)
+                or not math.isfinite(self.preservation_weight) or self.preservation_weight<0
+                or (self.preservation_weight and (self.mode!='head' or self.train_projectors))):
+            raise ValueError('invalid preservation weight or adaptation scope')
         if (self.feedback_mode not in ('generated_audio','separate_frozen_head')
                 or (self.feedback_mode=='separate_frozen_head'
                     and (self.mode not in ('head','head_output') or self.train_projectors))):
@@ -261,6 +266,14 @@ class Trainer:
     def _training_mode(self):
         train_selected_modules(self.model)
 
+    def _preservation(self,losses):
+        value=losses.get('preservation_loss')
+        if value is None:
+            raise ValueError('enabled preservation loss is missing')
+        if value.ndim!=0 or not torch.isfinite(value):
+            raise FloatingPointError('nonfinite or nonscalar preservation loss')
+        return value
+
     def validate(self, *, record_ids=None):
         records = list(enumerate(self.validation))
         if record_ids is not None:
@@ -273,6 +286,8 @@ class Trainer:
         rng = capture_rng(self.model)
         totals = [0., 0.]
         counts = [0, 0]
+        preservation_total=0.
+        preservation_count=0
         try:
             self.model.eval()
             with torch.no_grad():
@@ -282,6 +297,9 @@ class Trainer:
                     number = self._counts(batch)
                     losses = self.loss_fn(self.model, batch, seed=self.spec.seed+group[0][0])
                     self._check(losses)
+                    if self.spec.preservation_weight:
+                        preservation_total+=float(self._preservation(losses))*len(group)
+                        preservation_count+=len(group)
                     for i, key in enumerate(('text_loss', 'audio_loss')):
                         totals[i] += float(losses[key])*number[i]
                         counts[i] += number[i]
@@ -291,6 +309,8 @@ class Trainer:
         metrics = dict(zip(('text_loss', 'audio_loss'),
                            (total/max(1, n) for total, n in zip(totals, counts))))
         metrics.update(text_count=counts[0], audio_count=counts[1])
+        if self.spec.preservation_weight:
+            metrics['preservation_loss']=preservation_total/preservation_count
         self._event('validation', **metrics,
                     **({'record_ids': [row.record_id for _, row in records]} if record_ids is not None else {}))
         return metrics
@@ -320,11 +340,17 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 self._in_step = True
                 totals = [0., 0.]
+                preservation_total=0.
                 for index, (batch, number) in enumerate(zip(batches, counts)):
                     losses = self.loss_fn(self.model, batch, seed=self.spec.seed+self.state.micro_step+index)
                     self._check(losses)
                     loss = (losses['text_loss']*number[0]/max(1,text_count)
                             +losses['audio_loss']*number[1]/audio_count)
+                    if self.spec.preservation_weight:
+                        preservation=self._preservation(losses)
+                        fraction=len(batch['record_ids'])/len(selected)
+                        loss=loss+self.spec.preservation_weight*preservation*fraction
+                        preservation_total+=float(preservation.detach())*fraction
                     loss.backward()
                     for i, key in enumerate(('text_loss','audio_loss')):
                         totals[i] += float(losses[key].detach())*number[i]
@@ -347,7 +373,9 @@ class Trainer:
                     self.state.cursor = 0
                 self._event('train', record_ids=[self.train[i].record_id for i in selected],
                     text_loss=totals[0]/max(1,text_count), audio_loss=totals[1]/audio_count,
-                    learning_rate=self.optimizer.param_groups[0]['lr'])
+                    learning_rate=self.optimizer.param_groups[0]['lr'],
+                    **(dict(preservation_loss=preservation_total,preservation_weight=self.spec.preservation_weight)
+                       if self.spec.preservation_weight else {}))
                 if self.state.step % self.spec.validation_interval == 0:
                     self.validate()
                 if self.spec.checkpoint_interval and (self.state.step % self.spec.checkpoint_interval == 0

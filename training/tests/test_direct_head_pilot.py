@@ -33,6 +33,7 @@ def test_head_condition_changes_only_scope_from_the_output_condition():
     dict(max_seconds=601), dict(condition_dropout=0), dict(guidance_max=1),
     dict(weight_decay=.01), dict(warmup_steps=1), dict(micro_batch_size=2),
     dict(accumulation_steps=2),
+    dict(preservation_weight=1.),
 ])
 def test_head_trial_rejects_unregistered_changes_before_creating_outputs(tmp_path, change):
     train, validation = records('t'), records('v')
