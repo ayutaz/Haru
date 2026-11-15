@@ -111,13 +111,10 @@ def _feedback_logits(model,point,raw):
 
 
 @torch.no_grad()
-def prepare_feedback_point(model,batch,*,row,position,reference_head,seed,guidance=1.5):
+def _prepare_feedback_context(model,batch,*,row,position,seed,guidance=1.5):
     identity=_identity(model)
-    if (reference_head is model.head or reference_head.training
-            or any(p.requires_grad for p in reference_head.parameters())
-            or reference_head.config!=model.head.config
-            or position not in _positions(model,batch,row)):
-        raise ValueError('invalid reference head or lexical feedback position')
+    if not 1<=guidance<=2 or position not in _positions(model,batch,row):
+        raise ValueError('invalid lexical feedback position or guidance')
     keys=('tokens','model_latents','user_latents','model_mask','user_mask')
     values={k:batch[k][row:row+1].to(model.device) for k in keys}
     first=int(torch.nonzero(batch['audio_loss_mask'][row])[0])+1
@@ -128,10 +125,19 @@ def prepare_feedback_point(model,batch,*,row,position,reference_head,seed,guidan
     for index in range(first,position+1):hidden=advance(index,index+1)[:,-1]
     generator=torch.Generator(device=model.device).manual_seed(seed)
     noise=torch.randn(1,model.config.latent_dim,device=model.device,dtype=model.dtype,generator=generator)
-    point=FeedbackPoint(identity,hidden.detach(),cache,values['tokens'][:,position+1:position+2],
+    return FeedbackPoint(identity,hidden.detach(),cache,values['tokens'][:,position+1:position+2],
         values['user_latents'][:,position+1:position+2],values['model_mask'][:,position+1:position+2],
         values['user_mask'][:,position+1:position+2],noise,None,guidance)
-    raw=model.unscale_latents(reference_head.sample(hidden,noise,guidance))
+
+
+@torch.no_grad()
+def prepare_feedback_point(model,batch,*,row,position,reference_head,seed,guidance=1.5):
+    if (reference_head is model.head or reference_head.training
+            or any(p.requires_grad for p in reference_head.parameters())
+            or reference_head.config!=model.head.config):
+        raise ValueError('invalid reference head')
+    point=_prepare_feedback_context(model,batch,row=row,position=position,seed=seed,guidance=guidance)
+    raw=model.unscale_latents(reference_head.sample(point.hidden,point.noise,guidance))
     point.teacher_logits=_feedback_logits(model,point,raw).detach()
     return point
 
@@ -252,6 +258,7 @@ def _execute_head_pilot(model,train,validation,spec,destination,*,render,objecti
         frozen_weights_unchanged=trainer._frozen_digest()==trainer.frozen_digest,
         observations=observations,preservation_weight=spec.preservation_weight,
         training_audio_history=spec.training_audio_history,
+        preservation_target=spec.preservation_target,
         feedback_mode='generated_audio',voice_quality='unknown',final_test_used=False,
         optimizer_checkpoints_exported=False,expansion_authorized=False)
     (root/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False)+'\n',encoding='utf-8')

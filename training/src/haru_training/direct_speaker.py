@@ -143,6 +143,7 @@ def _run_bounded_pilot(model, train, validation, spec, destination, *, render, m
     if (spec.mode != mode or spec.feedback_mode != 'generated_audio'
             or spec.preservation_weight != 0
             or spec.training_audio_history != 'recorded'
+            or spec.preservation_target != 'original_head'
             or spec.train_projectors or spec.max_steps > 100 or spec.max_seconds > 600
             or spec.learning_rate != 1e-6 or len(train) != 3 or len(validation) != 3):
         raise ValueError('not the registered bounded direct speaker pilot')

@@ -48,8 +48,13 @@ class RunSpec:
     feedback_mode: str = 'generated_audio'
     preservation_weight: float = 0.
     training_audio_history: str = 'recorded'
+    preservation_target: str = 'original_head'
 
     def __post_init__(self):
+        if (self.preservation_target not in ('original_head','authentic_audio')
+                or (self.preservation_target=='authentic_audio' and
+                    (self.mode!='head' or self.train_projectors or self.training_audio_history!='recorded'))):
+            raise ValueError('invalid preservation target or combined adaptation changes')
         if (self.training_audio_history not in ('recorded','generated')
                 or (self.training_audio_history=='generated' and
                     (self.mode!='head' or self.train_projectors or self.preservation_weight
