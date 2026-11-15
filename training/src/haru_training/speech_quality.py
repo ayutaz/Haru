@@ -32,6 +32,17 @@ def _asr_pcm(path):
     return read_wave(path,sample_rate=16000).mean(axis=1,dtype=np.float32)
 
 
+def decoded_audio_sha256(path):
+    """Exact native PCM identity, including rate/channels, without WAV metadata."""
+    import soundfile as sf
+    signal,rate=sf.read(path,dtype='float32',always_2d=True)
+    if not len(signal) or rate<=0 or not np.isfinite(signal).all():
+        raise ValueError('decoded identity requires finite nonempty audio')
+    digest=sha256(f'{rate}:{len(signal)}:{signal.shape[1]}:float32-le\n'.encode('ascii'))
+    digest.update(np.ascontiguousarray(signal,dtype='<f4').tobytes())
+    return digest.hexdigest()
+
+
 def reuse_transcription(path, generated_text, cached, *, source, model, revision, settings):
     """Reuse an observed transcript only for byte-identical recognizer input.
 

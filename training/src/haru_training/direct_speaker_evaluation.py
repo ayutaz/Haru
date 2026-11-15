@@ -11,10 +11,10 @@ import soundfile as sf
 
 from .evaluation import (EvaluationPolicy, EvidenceError, _conditions, _content,
                          _hash, _level_relation, _replay, _speaker)
-from .speech_quality import transcript_comparison
+from .speech_quality import transcript_comparison,decoded_audio_sha256
 
 
-def _direct_case(case, root, policy, negatives):
+def _direct_case(case, root, policy, negatives,negative_audio):
     row = dict(id=case['id'], decision='hold', reasons=[], voice_similarity_confirmed=False)
     try:
         base, candidate = [_replay(case[s], root, policy) for s in ('baseline', 'candidate')]
@@ -58,7 +58,8 @@ def _direct_case(case, root, policy, negatives):
                                                root/case['candidate']['directory']/'response.wav', policy)
         if row['level_relation']['only_level_change']:
             reasons.append('waveform_only_level_change')
-        if hashes[1] in negatives:
+        if (hashes[1] in negatives or (negative_audio and
+                decoded_audio_sha256(root/case['candidate']['directory']/'response.wav') in negative_audio)):
             reasons.append('known_human_voice_negative')
         speaker, issues = _speaker(case.get('speaker_panels', []), hashes, root, policy)
         row['speaker'] = speaker
@@ -72,17 +73,18 @@ def _direct_case(case, root, policy, negatives):
     return row
 
 
-def evaluate_direct_manifest(manifest, *, root, policy=None, known_negative_wav_sha256=()):
+def evaluate_direct_manifest(manifest, *, root, policy=None, known_negative_wav_sha256=(),known_negative_audio_sha256=()):
     policy = policy or EvaluationPolicy()
     if manifest.get('version') != 1 or manifest.get('kind') != 'haru-direct-head-evaluation':
         raise ValueError('not a direct-head evaluation manifest')
     expected, cases = manifest.get('expected_cases', []), manifest.get('cases', [])
     ids = [case['id'] for case in cases]
     if (not expected or len(expected) != len(set(expected)) or len(ids) != len(set(ids))
-            or set(ids) - set(expected) or any(not _hash(h) for h in known_negative_wav_sha256)):
+            or set(ids) - set(expected) or any(not _hash(h) for h in known_negative_wav_sha256)
+            or any(not _hash(h) for h in known_negative_audio_sha256)):
         raise ValueError('invalid fixed case set or negative audio identities')
     lookup = {case['id']: case for case in cases}
-    rows = [_direct_case(lookup[key], Path(root), policy, set(known_negative_wav_sha256)) if key in lookup else
+    rows = [_direct_case(lookup[key], Path(root), policy, set(known_negative_wav_sha256),set(known_negative_audio_sha256)) if key in lookup else
             dict(id=key, decision='hold', reasons=['missing_case'], voice_similarity_confirmed=False)
             for key in expected]
     priority = ('reject', 'hold', 'no_metric_gain', 'candidate_for_listening')
@@ -93,4 +95,4 @@ def evaluate_direct_manifest(manifest, *, root, policy=None, known_negative_wav_
                 voice_similarity_confirmed=False, semantic_quality='unknown',
                 limitations=['Different generated texts are checked independently, not treated as aligned speech.',
                              'ASR errors and speaker scores do not establish human intelligibility or voice identity.',
-                             'Exact known-negative WAV matches are vetoes, not an unseen-voice classifier.'])
+                             'Exact known-negative WAV or decoded-PCM matches are vetoes, not an unseen-voice classifier.'])
