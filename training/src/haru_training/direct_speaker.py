@@ -3,7 +3,7 @@
 No downloads, rentals or synthetic voice teachers are created here. Callers
 authenticate the corpus, timing and model before invoking this training loop.
 """
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -119,7 +119,28 @@ def direct_spec(train, validation, *, split_sha256, cache_sha256,
 
 def run_direct_pilot(model, train, validation, spec, destination, *, render):
     """Save the base, diagnostic step 30 and terminal step; never choose by score."""
-    if (spec.mode != 'head_output' or spec.feedback_mode != 'generated_audio'
+    return _run_bounded_pilot(model, train, validation, spec, destination,
+                              render=render, mode='head_output')
+
+
+def direct_head_spec(train, validation, **kwargs):
+    """Separate whole-head condition; preserve every other output-pilot setting."""
+    return replace(direct_spec(train, validation, **kwargs), mode='head')
+
+
+def run_direct_head_pilot(model, train, validation, spec, destination, *, render):
+    """One scope-only experiment, not permission to broaden the output pilot."""
+    if (spec.optimizer_precision != 'fp32_master' or spec.seed != 20261114
+            or spec.condition_dropout != .1 or spec.guidance_max != 2.
+            or spec.weight_decay != 0 or spec.warmup_steps != 0
+            or spec.micro_batch_size != 1 or spec.accumulation_steps != 1):
+        raise ValueError('not the registered scope-only direct head pilot')
+    return _run_bounded_pilot(model, train, validation, spec, destination,
+                              render=render, mode='head')
+
+
+def _run_bounded_pilot(model, train, validation, spec, destination, *, render, mode):
+    if (spec.mode != mode or spec.feedback_mode != 'generated_audio'
             or spec.train_projectors or spec.max_steps > 100 or spec.max_seconds > 600
             or spec.learning_rate != 1e-6 or len(train) != 3 or len(validation) != 3):
         raise ValueError('not the registered bounded direct speaker pilot')
@@ -128,7 +149,7 @@ def run_direct_pilot(model, train, validation, spec, destination, *, render):
     def save(name, value):
         with (root/name).open('x', encoding='utf-8') as stream:
             json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
-    summary = configure_trainable(model, TrainingConfig(mode='head_output'))
+    summary = configure_trainable(model, TrainingConfig(mode=mode))
     objective = NativeSpeakerLoss(condition_dropout=spec.condition_dropout, guidance_max=spec.guidance_max)
     trainer = Trainer(model, train, validation, spec, root/'trainer', loss_fn=objective)
     save('spec.json', asdict(spec))
@@ -156,6 +177,7 @@ def run_direct_pilot(model, train, validation, spec, destination, *, render):
                   frozen_weights_unchanged=trainer._frozen_digest() == trainer.frozen_digest,
                   observations=observations, voice_quality='unknown',
                   expansion_authorized=False, final_test_used=False,
+                  adaptation_scope=mode,
                   feedback_mode='generated_audio',
                   conditioning='native_prefill_then_recorded_single_frames_cached',
                   conclusion='Await independent audio evaluation and human listening; not an adoption')
