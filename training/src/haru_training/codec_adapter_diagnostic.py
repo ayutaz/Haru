@@ -197,8 +197,10 @@ def validate_training_gate(spec, gate, *, spec_sha256, report_sha256):
     return gate
 
 
-def run_small_training(path, destination, *, gate_path, roundtrip_report):
+def run_small_training(path, destination, *, gate_path, roundtrip_report, comparison=None):
     """Train only the registered groups, then decode both input distributions."""
+    from .codec_content_comparison import prepare_execution,create_arm_trainer,load_pinned_content
+    context=None if comparison is None else prepare_execution(path,**comparison)
     from pathlib import Path
     import json
     import numpy as np
@@ -245,9 +247,16 @@ def run_small_training(path, destination, *, gate_path, roundtrip_report):
         state={k.removeprefix('codec.'):saved.get_tensor(k).to('cuda',torch.float32) for k in saved.keys() if k.startswith('codec.')}
     model.codec.load_state_dict(state,strict=True);del state
     frozen=codec_digest(model.codec)
-    trainer=CodecTrainer(model,selected,TrainSpec(base_model=spec['base_model'],base_revision=spec['base_revision'],
-        target_speaker=spec['target_speaker'],max_steps=spec['max_steps'],learning_rate=spec['learning_rate'],
-        seed=spec['seed'],max_seconds=spec['max_seconds']),rank=spec['rank'])
+    if context is None:
+        trainer=CodecTrainer(model,selected,TrainSpec(base_model=spec['base_model'],base_revision=spec['base_revision'],
+            target_speaker=spec['target_speaker'],max_steps=spec['max_steps'],learning_rate=spec['learning_rate'],
+            seed=spec['seed'],max_seconds=spec['max_seconds']),rank=spec['rank'])
+    else:
+        arm=context['arm']
+        content=load_pinned_content(arm['ctc']) if arm['content_weight'] else None
+        # Loading the extra encoder may consume RNG; all arms start identically.
+        torch.manual_seed(spec['seed'])
+        trainer=create_arm_trainer(model,selected,arm,content=content)
     observations=[]
     @torch.no_grad()
     def observe(step,reason):
@@ -291,6 +300,10 @@ def run_small_training(path, destination, *, gate_path, roundtrip_report):
         execution_complete=True,frozen_codec_exact=codec_digest(model.codec)==frozen,
         voice_similarity_confirmed=False,scope=('Full original fifteen-pair correction; no new independent corpus test' if full else
             'Three-pair diagnostic; other original train pairs are not new independent test data'))
+    if context is not None:
+        report['content_comparison']=dict(arm=context['arm'],evidence=context['evidence'],
+            content_encoder_sha256=trainer.content_sha256,
+            equal_update_comparison_pending=True,voice_similarity_confirmed=False)
     (out/'training.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     return report
 
