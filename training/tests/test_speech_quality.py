@@ -16,6 +16,27 @@ def test_japanese_character_error_is_not_a_voice_similarity_score():
     assert transcript_comparison('はい', '')['character_error_rate']==1
 
 
+def test_same_edit_count_can_have_different_cer_for_different_length_outputs():
+    from haru_training.speech_quality import transcript_comparison
+    short = transcript_comparison('あいう', 'あえう')
+    long = transcript_comparison('あいうえおかきくけこ', 'あえうえおかきくけこ')
+    assert short['character_edit_distance'] == long['character_edit_distance'] == 1
+    assert short['reference_characters'] == 3 and long['reference_characters'] == 10
+    assert short['character_error_rate'] > long['character_error_rate']
+
+
+@pytest.mark.parametrize('reference,hypothesis,edits,denominator', [
+    ('Ａ、Ｂ。', 'ab', 0, 2), ('はい', '', 2, 2),
+    ('あ', 'あいう', 2, 1), ('', 'はい', 2, 0), ('', '', 0, 0),
+])
+def test_edit_count_uses_same_normalization_and_preserves_undefined_empty_cer(reference, hypothesis, edits, denominator):
+    from haru_training.speech_quality import transcript_comparison
+    result = transcript_comparison(reference, hypothesis)
+    assert result['character_edit_distance'] == edits
+    assert result['reference_characters'] == denominator
+    assert result['character_error_rate'] == (edits / denominator if denominator else None)
+
+
 def test_asr_reads_real_audio_without_the_model_text_as_a_prompt(tmp_path):
     from haru_training.speech_quality import transcribe_comparison
     path=tmp_path/'response.wav'

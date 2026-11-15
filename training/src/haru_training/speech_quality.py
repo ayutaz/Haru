@@ -20,6 +20,7 @@ def transcript_comparison(generated_text, recognized_text):
             current.append(min(current[-1]+1,previous[j]+1,previous[j-1]+(left!=right)))
         previous=current
     return {'generated_text':generated_text,'recognized_text':recognized_text,
+            'character_edit_distance':previous[-1],
             'character_error_rate':previous[-1]/len(reference) if reference else None,
             'reference_characters':len(reference),'voice_similarity_confirmed':False,
             'scope':'ASR text agreement only; semantic coherence and voice identity are not assessed'}
