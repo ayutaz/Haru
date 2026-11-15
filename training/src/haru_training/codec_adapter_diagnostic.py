@@ -38,8 +38,10 @@ def run_stages(trainer, milestones, observe):
     history=[]
     observe(0,'initial')
     for boundary in milestones[1:]:
+        previous_step=trainer.step
         history.extend(trainer.fit(until_step=boundary))
-        observe(trainer.step,'time_limit' if trainer.step<boundary else 'milestone')
+        if trainer.step!=previous_step:
+            observe(trainer.step,'time_limit' if trainer.step<boundary else 'milestone')
         if trainer.step<boundary:break
     return history
 
@@ -231,6 +233,7 @@ def run_small_training(path, destination, *, gate_path, roundtrip_report):
     history=run_stages(trainer,spec['milestones'],observe)
     trainer.save(out/'terminal-checkpoint')
     report=dict(training_steps=trainer.step,training_seconds=trainer.elapsed,history=history,observations=observations,
+        stop_reason='update_cap' if trainer.step==spec['max_steps'] else 'training_time_limit',
         original_dataset_sha256=data['dataset_sha256'],effective_dataset_sha256=trainer.data_sha256,
         training_ids=spec['training_ids'],gate_sha256=file_hash(gate_path),spec_sha256=file_hash(path),
         execution_complete=True,frozen_codec_exact=codec_digest(model.codec)==frozen,

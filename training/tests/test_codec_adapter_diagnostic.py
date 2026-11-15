@@ -67,6 +67,23 @@ def test_time_limit_does_not_claim_the_requested_terminal_checkpoint():
     assert seen==[(0,'initial'),(7,'time_limit')]
 
 
+def test_time_limit_at_observed_boundary_does_not_overwrite_the_same_checkpoint():
+    from types import SimpleNamespace
+    from haru_training.codec_adapter_diagnostic import run_stages
+    class Stopped:
+        step=0
+        spec=SimpleNamespace(max_steps=300)
+        def fit(self,until_step):
+            if self.step==0:self.step=30;return [{'step':i} for i in range(1,31)]
+            return []
+    seen=[]
+    def observe(step,reason):
+        assert step not in [s for s,r in seen], 'existing checkpoint would be overwritten'
+        seen.append((step,reason))
+    assert len(run_stages(Stopped(),[0,30,100,300],observe))==30
+    assert [s for s,r in seen]==[0,30]
+
+
 def test_roundtrip_inputs_must_match_the_original_three_training_groups(tmp_path):
     from hashlib import sha256
     from haru_training.codec_adapter_diagnostic import validate_roundtrip_inputs
