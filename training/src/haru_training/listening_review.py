@@ -6,15 +6,17 @@ import re
 
 CONTENT = ('未確認','聞き取れる','一部不明','意味が分からない','判定できない')
 VOICE = ('未確認','A','B','差が分からない','両方似ていない','判定できない')
+RELATIVE = ('未確認','A','B','差が分からない','判定できない')
+MATCH = ('未確認','A','B','両方','両方似ていない','判定できない')
 
 
 def _hash(value):
     return sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 
-def make_presentation(cases, *, reference_sha256):
+def make_presentation(cases, *, reference_sha256, include_voice_match=False):
     cases=deepcopy(cases)
-    if (not cases or len({c['id'] for c in cases})!=len(cases)
+    if (type(include_voice_match) is not bool or not cases or len({c['id'] for c in cases})!=len(cases)
             or any(not isinstance(c['id'],str) or not c['id'] for c in cases)
             or not re.fullmatch('[a-f0-9]{64}',reference_sha256)):
         raise ValueError('invalid listening presentation')
@@ -25,15 +27,20 @@ def make_presentation(cases, *, reference_sha256):
             raise ValueError('presentation needs both original audio identities')
         for suffix in ('A_content','B_content','voice'):
             kind='voice' if suffix=='voice' else 'content'
-            fields.append(dict(id=case['id']+':'+suffix,kind=kind,options=list(VOICE if kind=='voice' else CONTENT)))
+            options=(RELATIVE if include_voice_match else VOICE) if kind=='voice' else CONTENT
+            fields.append(dict(id=case['id']+':'+suffix,kind=kind,options=list(options)))
+        if include_voice_match:
+            fields.append(dict(id=case['id']+':voice_match',kind='voice_match',options=list(MATCH)))
     value=dict(version=1,reference_sha256=reference_sha256,cases=cases,fields=fields)
+    if include_voice_match:value['include_voice_match']=True
     value['presentation_sha256']=_hash(value)
     return value
 
 
 def assess_review(presentation, responses):
     """Validate every choice and audio identity before interpreting the review."""
-    expected=make_presentation(presentation['cases'],reference_sha256=presentation['reference_sha256'])
+    expected=make_presentation(presentation['cases'],reference_sha256=presentation['reference_sha256'],
+        include_voice_match=presentation.get('include_voice_match',False))
     if (expected!=presentation or type(responses.get('version')) is not int
             or responses['version']!=1 or responses.get('presentation_sha256')!=expected['presentation_sha256']):
         raise ValueError('listening presentation identity differs')
@@ -44,6 +51,8 @@ def assess_review(presentation, responses):
         raise ValueError('incomplete or invalid listening responses')
     rows=[dict(id=c['id'],A_content=answers[c['id']+':A_content'],
                B_content=answers[c['id']+':B_content'],voice_preference=answers[c['id']+':voice']) for c in expected['cases']]
+    if presentation.get('include_voice_match'):
+        for row in rows:row['voice_match']=answers[row['id']+':voice_match']
     return dict(presentation_sha256=expected['presentation_sha256'],cases=rows,
         candidate_adopted=False,voice_similarity_confirmed=False,semantic_quality='unknown',
         scope='Raw anonymous preferences only; decode the separate condition key for relative candidate comparison.')

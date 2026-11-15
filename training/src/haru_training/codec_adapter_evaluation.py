@@ -144,7 +144,7 @@ def write_blind_collection(destination,cases,reference,**reference_args):
     from html import escape
     from io import BytesIO
     import soundfile as sf
-    from .listening_review import make_presentation, review_controls
+    from .listening_review import make_presentation, review_controls,RELATIVE,MATCH
     destination=Path(destination)
     if destination.exists():raise FileExistsError('listening collection already exists')
     if (len(cases)!=3 or len({r['id'] for r in cases})!=3
@@ -165,7 +165,7 @@ def write_blind_collection(destination,cases,reference,**reference_args):
         keys.append(json.loads((folder/'answer-key.json').read_text(encoding='utf-8')))
     presentation=make_presentation([dict(id=row['id'],audio_sha256={label:_hash(Path(row['directory'])/side/'response.wav')
         for label,side in zip(('A','B'),key['order'])}) for row,key in zip(cases,keys)],
-        reference_sha256=reference_args['reference_sha256'])
+        reference_sha256=reference_args['reference_sha256'],include_voice_match=True)
     def player(file):
         audio,rate=sf.read(file,dtype='float32')
         if audio.ndim!=1 or not len(audio) or not np.isfinite(audio).all():
@@ -174,16 +174,18 @@ def write_blind_collection(destination,cases,reference,**reference_args):
         gain=min(.1/max(rms,1e-12),.99/max(float(np.abs(audio).max()),1e-12))
         buffer=BytesIO();sf.write(buffer,audio*gain,rate,format='WAV',subtype='PCM_16')
         return '<audio controls preload="metadata" src="data:audio/wav;base64,'+base64.b64encode(buffer.getvalue()).decode('ascii')+'"></audio>'
-    options='<option>未確認</option><option>A</option><option>B</option><option>差が分からない</option><option>両方似ていない</option><option>判定できない</option>'
+    options=''.join('<option>'+escape(value)+'</option>' for value in RELATIVE)
+    match_options=''.join('<option>'+escape(value)+'</option>' for value in MATCH)
     html='<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3問の音声比較</title>'
     html+='<style>body{max-width:800px;margin:2em auto;padding:0 1em;font-family:sans-serif;line-height:1.7;background:#f6f7fa;color:#182030}section{background:white;border:1px solid #dae0e9;border-radius:12px;margin:1.2em 0;padding:1.2em}audio{width:100%}label{display:block;margin:.7em 0}select{margin-left:1em;padding:.3em}summary{cursor:pointer}</style>'
-    html+='<h1>3問の音声比較</h1><p>本人の参照を聴いてからAとBを比較してください。声の近さと聞き取りやすさを別々に確認します</p><section><h2>本人の参照音声</h2>'+player(reference)+'</section>'
+    html+='<h1>3問の音声比較</h1><p>本人の参照を聴いてからAとBを比較してください。聞き取りは言葉を聞き取れるかで評価し、質問への返答として適切かとは分けてください</p><section><h2>本人の参照音声</h2>'+player(reference)+'</section>'
     for index,(row,info,key) in enumerate(zip(cases,infos,keys),1):
         html+='<section><h2>'+str(index)+'. '+escape(row['question'])+'</h2>'
         for label,side in zip(('A','B'),key['order']):
             html+='<h3>'+label+'</h3>'+player(Path(row['directory'])/side/'response.wav')
-            html+='<label>'+label+'の内容<select data-review-field="'+escape(row['id']+':'+label+'_content',quote=True)+'"><option>未確認</option><option>聞き取れる</option><option>一部不明</option><option>意味が分からない</option><option>判定できない</option></select></label>'
-        html+='<label>本人の声に近い方<select data-review-field="'+escape(row['id']+':voice',quote=True)+'">'+options+'</select></label>'
+            html+='<label>'+label+'の聞き取り<select data-review-field="'+escape(row['id']+':'+label+'_content',quote=True)+'"><option>未確認</option><option>聞き取れる</option><option>一部不明</option><option>意味が分からない</option><option>判定できない</option></select></label>'
+        html+='<label>少しでも本人の声に近い方<select data-review-field="'+escape(row['id']+':voice',quote=True)+'">'+options+'</select></label>'
+        html+='<label>本人の声に聞こえる方<select data-review-field="'+escape(row['id']+':voice_match',quote=True)+'">'+match_options+'</select></label>'
         html+='<details><summary>聴いた後に生成textを確認</summary><p>'+escape(info['text'])+'</p></details></section>'
     html+='<p>再生用の音声には同じ方式で音量調整を行っています。元の録音と条件の対応表は別に保存しています</p>'+review_controls(presentation)+'</html>'
     destination.mkdir(parents=True)

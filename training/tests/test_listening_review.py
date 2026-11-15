@@ -53,6 +53,20 @@ def test_relative_preference_alone_never_confirms_perceived_identity():
     assert result['voice_similarity_confirmed'] is False
 
 
+def test_slight_relative_gain_and_neither_matching_target_are_recorded_separately():
+    from haru_training.listening_review import make_presentation,assess_review
+    original=protocol()
+    p=make_presentation(original['cases'],reference_sha256=original['reference_sha256'],include_voice_match=True)
+    assert len(p['fields'])==12
+    a=dict(version=1,presentation_sha256=p['presentation_sha256'],answers={})
+    for field in p['fields']:
+        a['answers'][field['id']]={'content':'聞き取れる','voice':'B','voice_match':'両方似ていない'}[field['kind']]
+    result=assess_review(p,a)
+    assert all(c['voice_preference']=='B' and c['voice_match']=='両方似ていない' for c in result['cases'])
+    assert result['voice_similarity_confirmed'] is False
+    assert p['presentation_sha256']!=original['presentation_sha256']
+
+
 def test_presentation_script_cannot_be_closed_by_case_identifier():
     from haru_training.listening_review import make_presentation, review_controls
     p=make_presentation([{'id':'</script><script>alert(1)</script>', 'audio_sha256':{'A':'b'*64,'B':'c'*64}}],reference_sha256='a'*64)
