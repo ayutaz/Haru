@@ -279,7 +279,7 @@ def _speaker(panels, hashes, root, policy):
     return {'status': status, 'encoders': rows}, reasons
 
 
-def _case(case, root, policy):
+def _case(case, root, policy, *, native_teacher_rates=False):
     result = dict(id=case['id'], decision='hold', reasons=[], voice_similarity_confirmed=False)
     try:
         base, candidate = [_replay(case[side], root, policy) for side in ('baseline', 'candidate')]
@@ -290,7 +290,7 @@ def _case(case, root, policy):
             return result
         if base[3]:
             raise EvidenceError('baseline_waveform_invalid')
-        if base[2]['sample_rate'] != candidate[2]['sample_rate']:
+        if not native_teacher_rates and base[2]['sample_rate'] != candidate[2]['sample_rate']:
             raise EvidenceError('unpaired_audio_format')
         if _conditions(base[0]) != _conditions(candidate[0]):
             raise EvidenceError('unpaired_conditions')
