@@ -44,3 +44,22 @@ def test_real_weight_three_pair_training_after_independent_codec_screening():
     for case in spec['cases']:
         folder=destination/'step-0'/case['id']
         assert np.array_equal(sf.read(folder/'baseline/response.wav')[0],sf.read(folder/'candidate/response.wav')[0])
+
+
+@pytest.mark.cuda
+def test_real_weight_full_fifteen_pair_correction():
+    if not os.environ.get('HARU_CODEC_FULL_TRAIN_GATE'):
+        pytest.skip('explicit complete-cohort correction required')
+    from haru_training.codec_adapter_diagnostic import run_small_training
+    from haru_training.checkpoint import read_checkpoint
+    import torch
+    destination=Path(os.environ['HARU_CODEC_FULL_TRAIN_OUTPUT'])
+    report=run_small_training(os.environ['HARU_CODEC_DIAGNOSTIC_SPEC'],destination,
+        gate_path=os.environ['HARU_CODEC_FULL_TRAIN_GATE'],roundtrip_report=os.environ['HARU_CODEC_ROUNDTRIP_REPORT'])
+    assert report['execution_complete'] and report['frozen_codec_exact']
+    assert len(report['training_ids'])==15 and report['rank']==32
+    assert 1<=report['training_steps']<=300
+    first=read_checkpoint(destination/'step-0/adapter')
+    last=read_checkpoint(destination/report['observations'][-1]['path']/'adapter')
+    assert sum(t.numel() for t in last['weights'].values())==133152
+    assert any(not torch.equal(first['weights'][k],last['weights'][k]) for k in first['weights'])

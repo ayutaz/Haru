@@ -49,6 +49,31 @@ def validate_correction(spec, *, root):
     return spec
 
 
+def validate_full_data_correction(spec, *, root):
+    """Restore the entire original 15-pair cohort, keeping the rank32 parent fixed."""
+    from pathlib import Path
+    import json
+    from .codec_adapter_trial import file_hash
+    from .codec_adapter_dataset import load_dataset
+    try:
+        root=Path(root).resolve();parent=spec['parent'];path=(root/parent['path']).resolve()
+        if not path.is_relative_to(root) or path.parent!=root or file_hash(path)!=parent['sha256']:
+            raise ValueError('full-data correction parent identity differs')
+        original=validate_correction(json.loads(path.read_text(encoding='utf-8')),root=root)
+        data,pairs=load_dataset(root/original['dataset']['path'])
+        if (len(pairs)!=15 or any(p.metadata['split']!='train' for p in pairs)
+                or data['dataset_sha256']!=original['dataset_sha256']):
+            raise ValueError('full-data correction requires the entire original fifteen train pairs')
+        expected=deepcopy(original)
+        expected.update(kind='haru-codec-full-data-correction',training_ids=[p.metadata['id'] for p in pairs],
+            parent=parent,roundtrip_parent_sha256=original['parent']['sha256'])
+        if spec!=expected:
+            raise ValueError('full-data correction may change only the training cohort')
+    except (KeyError,TypeError,OSError) as error:
+        raise ValueError('incomplete full-data correction') from error
+    return spec
+
+
 def run_stages(trainer, milestones, observe):
     """Report initial/terminal states even if the finite time limit stops early."""
     if (trainer.step!=0 or milestones[0]!=0 or milestones[-1]!=trainer.spec.max_steps
@@ -173,7 +198,7 @@ def validate_training_gate(spec, gate, *, spec_sha256, report_sha256):
 
 
 def run_small_training(path, destination, *, gate_path, roundtrip_report):
-    """Train exactly the three fixed pairs, then decode both input distributions."""
+    """Train only the registered groups, then decode both input distributions."""
     from pathlib import Path
     import json
     import numpy as np
@@ -191,16 +216,20 @@ def run_small_training(path, destination, *, gate_path, roundtrip_report):
     from .codec_adapter_evaluation import save_decoder_comparison
     path=Path(path);root=path.parent;out=Path(destination)
     spec=json.loads(path.read_text(encoding='utf-8'))
+    full=spec.get('kind')=='haru-codec-full-data-correction'
     correction=spec.get('kind')=='haru-codec-rank-correction'
-    spec=validate_correction(spec,root=root) if correction else validate_diagnostic(spec,root=root)
+    spec=(validate_full_data_correction(spec,root=root) if full else
+          validate_correction(spec,root=root) if correction else validate_diagnostic(spec,root=root))
     gate=json.loads(Path(gate_path).read_text(encoding='utf-8'))
-    validate_training_gate(spec,gate,spec_sha256=spec['parent']['sha256'] if correction else file_hash(path),
+    gate_spec=dict(spec,training_ids=spec['training_ids'][:3]) if full else spec
+    gate_hash=spec['roundtrip_parent_sha256'] if full else spec['parent']['sha256'] if correction else file_hash(path)
+    validate_training_gate(gate_spec,gate,spec_sha256=gate_hash,
         report_sha256=file_hash(roundtrip_report))
     data,pairs=load_dataset(root/spec['dataset']['path'])
     if data['dataset_sha256']!=spec['dataset_sha256']:
         raise ValueError('full original dataset differs from the diagnostic')
-    selected=select_training_pairs(pairs,spec['training_ids'])
-    if [p.metadata['id'] for p in selected]!=[p.metadata['id'] for p in pairs[:3]]:
+    selected=tuple(pairs) if full else select_training_pairs(pairs,spec['training_ids'])
+    if [p.metadata['id'] for p in selected]!=(spec['training_ids'] if full else [p.metadata['id'] for p in pairs[:3]]):
         raise ValueError('diagnostic membership differs from the original fixed prefix')
     require_vast_cuda()
     out.mkdir(parents=True,exist_ok=False)
@@ -256,11 +285,12 @@ def run_small_training(path, destination, *, gate_path, roundtrip_report):
     trainer.save(out/'terminal-checkpoint')
     report=dict(training_steps=trainer.step,training_seconds=trainer.elapsed,history=history,observations=observations,
         stop_reason='update_cap' if trainer.step==spec['max_steps'] else 'training_time_limit',
-        rank=spec['rank'],parent_diagnostic_sha256=spec['parent']['sha256'] if correction else None,
+        rank=spec['rank'],parent_diagnostic_sha256=gate_hash if (correction or full) else None,
         original_dataset_sha256=data['dataset_sha256'],effective_dataset_sha256=trainer.data_sha256,
         training_ids=spec['training_ids'],gate_sha256=file_hash(gate_path),spec_sha256=file_hash(path),
         execution_complete=True,frozen_codec_exact=codec_digest(model.codec)==frozen,
-        voice_similarity_confirmed=False,scope='Three-pair diagnostic; other original train pairs are not new independent test data')
+        voice_similarity_confirmed=False,scope=('Full original fifteen-pair correction; no new independent corpus test' if full else
+            'Three-pair diagnostic; other original train pairs are not new independent test data'))
     (out/'training.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     return report
 

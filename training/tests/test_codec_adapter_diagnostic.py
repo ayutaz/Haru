@@ -129,3 +129,27 @@ def test_rank32_correction_changes_capacity_only_and_preserves_its_parent_gate(t
         with pytest.raises(ValueError):validate_correction(changed,root=tmp_path)
     path.write_text('{}',encoding='utf-8')
     with pytest.raises(ValueError):validate_correction(correction,root=tmp_path)
+
+
+def test_full_data_correction_uses_all_fifteen_existing_train_groups_without_other_changes(tmp_path,monkeypatch):
+    import json
+    from hashlib import sha256
+    from types import SimpleNamespace
+    from haru_training.codec_adapter_diagnostic import validate_full_data_correction
+    parent=diagnostic(tmp_path)
+    first=tmp_path/'diagnostic.json';first.write_text(json.dumps(parent),encoding='utf-8')
+    rank32=deepcopy(parent);rank32.update(kind='haru-codec-rank-correction',rank=32,
+        parent=dict(path=first.name,sha256=sha256(first.read_bytes()).hexdigest()))
+    second=tmp_path/'rank32.json';second.write_text(json.dumps(rank32),encoding='utf-8')
+    ids=['a','b','c']+[f'other-{i}' for i in range(12)]
+    pairs=[SimpleNamespace(metadata=dict(id=name,split='train')) for name in ids]
+    monkeypatch.setattr('haru_training.codec_adapter_dataset.load_dataset',lambda path:(dict(dataset_sha256=parent['dataset_sha256']),pairs))
+    full=deepcopy(rank32);full.update(kind='haru-codec-full-data-correction',training_ids=ids,
+        parent=dict(path=second.name,sha256=sha256(second.read_bytes()).hexdigest()),
+        roundtrip_parent_sha256=rank32['parent']['sha256'])
+    assert validate_full_data_correction(full,root=tmp_path)==full
+    for field,value in [('training_ids',ids[:-1]),('learning_rate',.1),('rank',64),('roundtrip_parent_sha256','d'*64)]:
+        changed=deepcopy(full);changed[field]=value
+        with pytest.raises(ValueError):validate_full_data_correction(changed,root=tmp_path)
+    pairs[-1].metadata['split']='reference'
+    with pytest.raises(ValueError):validate_full_data_correction(full,root=tmp_path)
