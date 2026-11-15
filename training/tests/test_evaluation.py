@@ -172,6 +172,19 @@ def test_calibrated_cross_encoder_gain_is_only_a_listening_candidate(manifest, t
     assert report['policy']['calibration_status'] == 'provisional_not_perceptually_validated'
 
 
+@pytest.mark.parametrize('gain',[1.,.5,1.5])
+def test_level_change_alone_cannot_be_listening_candidate_even_with_claimed_embedding_gain(manifest,tmp_path,gain):
+    audio,rate=sf.read(tmp_path/'base/response.wav',dtype='float32')
+    sf.write(tmp_path/'adapted/response.wav',audio*gain,rate,subtype='FLOAT')
+    reseal(tmp_path/'adapted')
+    case=manifest['cases'][0]
+    case['candidate']['asr']['wav_sha256']=digest(tmp_path/'adapted/response.wav')
+    case['speaker_panels']=speaker_panels(manifest,tmp_path)
+    report=evaluate(manifest,tmp_path)
+    assert report['decision']=='hold'
+    assert 'waveform_only_level_change' in report['cases'][0]['reasons']
+
+
 @pytest.mark.parametrize('mutation,reason', [
     ('overlap', 'speaker_calibration_overlap'),
     ('leak', 'speaker_reference_leakage'),

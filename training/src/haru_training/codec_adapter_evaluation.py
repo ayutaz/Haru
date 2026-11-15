@@ -144,6 +144,7 @@ def write_blind_collection(destination,cases,reference,**reference_args):
     from html import escape
     from io import BytesIO
     import soundfile as sf
+    from .listening_review import make_presentation, review_controls
     destination=Path(destination)
     if destination.exists():raise FileExistsError('listening collection already exists')
     if (len(cases)!=3 or len({r['id'] for r in cases})!=3
@@ -162,6 +163,9 @@ def write_blind_collection(destination,cases,reference,**reference_args):
         folder=Path(row['directory'])
         write_blind_html(folder,reference,**dict(reference_args,seed=reference_args['seed']+index))
         keys.append(json.loads((folder/'answer-key.json').read_text(encoding='utf-8')))
+    presentation=make_presentation([dict(id=row['id'],audio_sha256={label:_hash(Path(row['directory'])/side/'response.wav')
+        for label,side in zip(('A','B'),key['order'])}) for row,key in zip(cases,keys)],
+        reference_sha256=reference_args['reference_sha256'])
     def player(file):
         audio,rate=sf.read(file,dtype='float32')
         if audio.ndim!=1 or not len(audio) or not np.isfinite(audio).all():
@@ -178,13 +182,15 @@ def write_blind_collection(destination,cases,reference,**reference_args):
         html+='<section><h2>'+str(index)+'. '+escape(row['question'])+'</h2>'
         for label,side in zip(('A','B'),key['order']):
             html+='<h3>'+label+'</h3>'+player(Path(row['directory'])/side/'response.wav')
-            html+='<label>'+label+'の内容<select><option>未確認</option><option>聞き取れる</option><option>一部不明</option><option>意味が分からない</option><option>判定できない</option></select></label>'
-        html+='<label>本人の声に近い方<select>'+options+'</select></label>'
+            html+='<label>'+label+'の内容<select data-review-field="'+escape(row['id']+':'+label+'_content',quote=True)+'"><option>未確認</option><option>聞き取れる</option><option>一部不明</option><option>意味が分からない</option><option>判定できない</option></select></label>'
+        html+='<label>本人の声に近い方<select data-review-field="'+escape(row['id']+':voice',quote=True)+'">'+options+'</select></label>'
         html+='<details><summary>聴いた後に生成textを確認</summary><p>'+escape(info['text'])+'</p></details></section>'
-    html+='<p>再生用の音声には同じ方式で音量調整を行っています。元の録音と条件の対応表は別に保存しています。選択内容はこのページから送信されません</p></html>'
+    html+='<p>再生用の音声には同じ方式で音量調整を行っています。元の録音と条件の対応表は別に保存しています</p>'+review_controls(presentation)+'</html>'
     destination.mkdir(parents=True)
     (destination/'listen.html').write_text(html,encoding='utf-8')
+    (destination/'presentation.json').write_text(json.dumps(presentation,ensure_ascii=False,indent=2),encoding='utf-8')
     (destination/'answer-key.json').write_text(json.dumps(dict(cases=[dict(id=r['id'],**key) for r,key in zip(cases,keys)],
+        presentation_sha256=presentation['presentation_sha256'],
         normalization=dict(rms_target=.1,peak_limit=.99,subtype='PCM_16',pitch_or_speed_changed=False),
         voice_similarity_confirmed=False),ensure_ascii=False,indent=2),encoding='utf-8')
     return destination/'listen.html'

@@ -30,6 +30,7 @@ class EvaluationPolicy:
     minimum_references_per_group: int = 3
     minimum_independent_encoders: int = 2
     minimum_repeats: int = 3
+    maximum_level_only_residual: float = 1e-6
     calibration_status: str = 'provisional_not_perceptually_validated'
 
 
@@ -95,6 +96,22 @@ def _conditions(metadata):
             or not isinstance(metadata.get('system_prompt'), str)):
         raise EvidenceError('unpaired_conditions')
     return input_sha, config, metadata['system_prompt']
+
+
+def _level_relation(base_path, candidate_path, policy):
+    """Detect a sample-aligned scalar gain, not a general voice-equivalence test."""
+    left,lr=sf.read(base_path,dtype='float64',always_2d=True)
+    right,rr=sf.read(candidate_path,dtype='float64',always_2d=True)
+    if lr!=rr or left.shape!=right.shape:
+        return dict(status='not_sample_aligned',only_level_change=False)
+    energy=float(np.sum(left*left))
+    if energy<=0:
+        return dict(status='unknown',only_level_change=False)
+    gain=float(np.sum(left*right)/energy)
+    residual=float(np.sqrt(np.sum((right-gain*left)**2)/max(float(np.sum(right*right)),1e-30)))
+    return dict(status='measured',gain=gain,relative_residual=residual,
+        only_level_change=gain>0 and residual<=policy.maximum_level_only_residual,
+        scope='Aligned scalar-gain diagnostic; not perceived similarity')
 
 
 def _content(base, candidate, base_meta, candidate_meta, hashes, policy):
@@ -278,7 +295,11 @@ def _case(case, root, policy):
         if _conditions(base[0]) != _conditions(candidate[0]):
             raise EvidenceError('unpaired_conditions')
         hashes = [base[1]['response.wav'], candidate[1]['response.wav']]
+        result['level_relation']=_level_relation(root/case['baseline']['directory']/'response.wav',
+            root/case['candidate']['directory']/'response.wav',policy)
         content, reasons = _content(case['baseline']['asr'], case['candidate']['asr'], base[0], candidate[0], hashes, policy)
+        if result['level_relation']['only_level_change']:
+            reasons.append('waveform_only_level_change')
         result['content'] = content
         speaker, issues = _speaker(case.get('speaker_panels', []), hashes, root, policy)
         result['speaker'] = speaker
