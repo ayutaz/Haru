@@ -224,11 +224,17 @@ def run_preserving_pilot(model,train,validation,spec,destination,*,render,regist
     if (not 0<registered_weight<=1000 or spec!=expected
             or spec.preservation_weight not in (0,registered_weight)):
         raise ValueError('not the registered content-preservation condition')
+    factory=ContentPreservingLoss if spec.preservation_weight else lambda _:NativeSpeakerLoss()
+    return _execute_head_pilot(model,train,validation,spec,destination,render=render,objective_factory=factory)
+
+
+def _execute_head_pilot(model,train,validation,spec,destination,*,render,objective_factory):
+    """Shared execution after each public runner validates its own recipe."""
     root=Path(destination)
     if root.exists() and any(root.iterdir()):raise FileExistsError('pilot output already exists')
     root.mkdir(parents=True,exist_ok=True)
     configure_trainable(model,TrainingConfig(mode='head'))
-    objective=ContentPreservingLoss(model) if spec.preservation_weight else NativeSpeakerLoss()
+    objective=objective_factory(model)
     trainer=Trainer(model,train,validation,spec,root/'trainer',loss_fn=objective)
     observations=[]
     for intended in sorted({0,min(30,spec.max_steps),spec.max_steps}):
@@ -245,6 +251,7 @@ def run_preserving_pilot(model,train,validation,spec,destination,*,render,regist
     result=dict(complete=trainer.state.step==spec.max_steps,completed_updates=trainer.state.step,
         frozen_weights_unchanged=trainer._frozen_digest()==trainer.frozen_digest,
         observations=observations,preservation_weight=spec.preservation_weight,
+        training_audio_history=spec.training_audio_history,
         feedback_mode='generated_audio',voice_quality='unknown',final_test_used=False,
         optimizer_checkpoints_exported=False,expansion_authorized=False)
     (root/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False)+'\n',encoding='utf-8')

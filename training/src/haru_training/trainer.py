@@ -47,8 +47,14 @@ class RunSpec:
     optimizer_precision: str = 'native'
     feedback_mode: str = 'generated_audio'
     preservation_weight: float = 0.
+    training_audio_history: str = 'recorded'
 
     def __post_init__(self):
+        if (self.training_audio_history not in ('recorded','generated')
+                or (self.training_audio_history=='generated' and
+                    (self.mode!='head' or self.train_projectors or self.preservation_weight
+                     or self.feedback_mode!='generated_audio'))):
+            raise ValueError('invalid training audio history or combined adaptation changes')
         if (type(self.preservation_weight) not in (int,float)
                 or not math.isfinite(self.preservation_weight) or self.preservation_weight<0
                 or (self.preservation_weight and (self.mode!='head' or self.train_projectors))):
