@@ -14,7 +14,7 @@ import numpy as np
 
 import torch
 
-from .contracts import TrainingConfig
+from .contracts import TrainingConfig, train_selected_modules
 from .checkpoint import read_checkpoint, write_checkpoint
 from .data import collate_sequences
 from .model import training_losses
@@ -259,9 +259,7 @@ class Trainer:
                 raise FloatingPointError('nonfinite or nonscalar supervised loss')
 
     def _training_mode(self):
-        self.model.train()
-        if hasattr(self.model, 'codec'):
-            self.model.codec.eval()
+        train_selected_modules(self.model)
 
     def validate(self, *, record_ids=None):
         records = list(enumerate(self.validation))

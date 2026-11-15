@@ -27,6 +27,17 @@ class TrainingConfig:
             raise ValueError('execution limits must be positive and within authorization')
 
 
+def train_selected_modules(model):
+    """Train selected weights while keeping fully frozen modules deterministic."""
+    model.train()
+    for module in model.modules():
+        parameters = tuple(module.parameters())
+        if parameters and not any(p.requires_grad for p in parameters):
+            module.eval()
+    if hasattr(model, 'codec'):
+        model.codec.eval()
+
+
 def configure_trainable(model, config: TrainingConfig) -> dict:
     for name in ('head', 'codec', 'lm', 'model_audio_proj', 'user_audio_proj'):
         if not hasattr(model, name):
@@ -46,8 +57,7 @@ def configure_trainable(model, config: TrainingConfig) -> dict:
     if config.train_projectors:
         model.model_audio_proj.requires_grad_(True)
         model.user_audio_proj.requires_grad_(True)
-    model.train()
-    model.codec.eval()
+    train_selected_modules(model)
     if hasattr(model.lm.config, 'use_cache'):
         model.lm.config.use_cache = False
     names = [n for n, p in model.named_parameters() if p.requires_grad]
