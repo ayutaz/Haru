@@ -137,10 +137,116 @@ def run_roundtrip(path, destination):
     return report
 
 
+def validate_training_gate(spec, gate, *, spec_sha256, report_sha256):
+    try:
+        rows=gate['cases']
+        if (gate['small_training_gate_passed'] is not True or gate['spec_sha256']!=spec_sha256
+                or gate['roundtrip_report_sha256']!=report_sha256 or len(rows)!=6
+                or {(r['id'],r['side']) for r in rows}!=
+                    {(name,side) for name in spec['training_ids'] for side in ('source','target')}
+                or any(r['status']!='supported_for_small_training' or r['reasons'] for r in rows)):
+            raise ValueError('independent roundtrip screening does not support small training')
+    except (KeyError,TypeError) as error:
+        raise ValueError('incomplete independent roundtrip screening') from error
+    return gate
+
+
+def run_small_training(path, destination, *, gate_path, roundtrip_report):
+    """Train exactly the three fixed pairs, then decode both input distributions."""
+    from pathlib import Path
+    import json
+    import numpy as np
+    import torch
+    import soundfile as sf
+    from haru.models.haru import HaruModel
+    from haru.models.loaders import resolve_checkpoint
+    from safetensors import safe_open
+    from .codec_adapter_trial import require_vast_cuda,file_hash
+    from .codec_adapter_dataset import load_dataset
+    from .codec_adapter_training import CodecTrainer,TrainSpec,paired_loss
+    from .codec_adapter import get_adapter,decode_training
+    from .codec_adapter_inference import codec_digest,export_adapter
+    from .checkpoint import read_checkpoint
+    from .codec_adapter_evaluation import save_decoder_comparison
+    path=Path(path);root=path.parent;out=Path(destination)
+    spec=validate_diagnostic(json.loads(path.read_text(encoding='utf-8')),root=root)
+    gate=json.loads(Path(gate_path).read_text(encoding='utf-8'))
+    validate_training_gate(spec,gate,spec_sha256=file_hash(path),report_sha256=file_hash(roundtrip_report))
+    data,pairs=load_dataset(root/spec['dataset']['path'])
+    if data['dataset_sha256']!=spec['dataset_sha256']:
+        raise ValueError('full original dataset differs from the diagnostic')
+    selected=select_training_pairs(pairs,spec['training_ids'])
+    if [p.metadata['id'] for p in selected]!=[p.metadata['id'] for p in pairs[:3]]:
+        raise ValueError('diagnostic membership differs from the original fixed prefix')
+    require_vast_cuda()
+    out.mkdir(parents=True,exist_ok=False)
+    torch.set_num_threads(4);torch.manual_seed(spec['seed'])
+    torch.backends.cuda.matmul.allow_tf32=False;torch.backends.cudnn.allow_tf32=False
+    torch.backends.cudnn.benchmark=False
+    directory=resolve_checkpoint(spec['base_model'],spec['base_revision'])
+    if file_hash(directory/'model.safetensors')!=data['codec_weights_sha256']:
+        raise ValueError('base weight file differs from prepared teachers')
+    model=HaruModel.from_pretrained(str(directory),device='cuda',dtype=torch.bfloat16)
+    model.codec.float()
+    with safe_open(str(directory/'model.safetensors'),framework='pt',device='cpu') as saved:
+        state={k.removeprefix('codec.'):saved.get_tensor(k).to('cuda',torch.float32) for k in saved.keys() if k.startswith('codec.')}
+    model.codec.load_state_dict(state,strict=True);del state
+    frozen=codec_digest(model.codec)
+    trainer=CodecTrainer(model,selected,TrainSpec(base_model=spec['base_model'],base_revision=spec['base_revision'],
+        target_speaker=spec['target_speaker'],max_steps=spec['max_steps'],learning_rate=spec['learning_rate'],
+        seed=spec['seed'],max_seconds=spec['max_seconds']),rank=8)
+    observations=[]
+    @torch.no_grad()
+    def observe(step,reason):
+        folder=out/('step-'+str(step));folder.mkdir()
+        model.requires_grad_(False)
+        export_adapter(model,folder/'adapter',**trainer._identity())
+        measured=[]
+        for pair in pairs:
+            wave,_=decode_training(model.codec,pair.latents[None]);wave=wave[0]
+            loss=paired_loss(wave,pair)
+            audio=wave.float().cpu().numpy()
+            valid=audio[:pair.metadata['valid_samples']]
+            name=pair.metadata['id']+'.wav';sf.write(folder/name,valid,24000,subtype='FLOAT')
+            measured.append(dict(id=pair.metadata['id'],
+                trained_id=pair.metadata['id'] in spec['training_ids'],spectral_loss=float(loss['spectral']),
+                rms=float(np.sqrt(np.mean(valid.astype('float64')**2))),
+                samples=len(valid),wav=name,wav_sha256=file_hash(folder/name)))
+        for case in spec['cases']:
+            raw=read_checkpoint(root/'generated'/case['id']/'raw-latents')
+            if (raw['metadata']['input_sha256']!=case['sha256']
+                    or raw['metadata']['base_revision']!=spec['base_revision']
+                    or raw['metadata']['codec_sha256']!=frozen):
+                raise ValueError('saved generated latent provenance differs')
+            metadata=dict(raw['metadata'],diagnostic_training_ids=spec['training_ids'],
+                effective_dataset_sha256=trainer.data_sha256)
+            save_decoder_comparison(folder/case['id'],model,raw['latents'],metadata)
+        item=dict(step=step,reason=reason,records=measured,frozen_codec_exact=codec_digest(model.codec)==frozen,
+                  effective_dataset_sha256=trainer.data_sha256,voice_similarity_confirmed=False)
+        assert item['frozen_codec_exact']
+        (folder/'measurements.json').write_text(json.dumps(item,indent=2),encoding='utf-8')
+        observations.append(dict(step=step,reason=reason,path=folder.name))
+        get_adapter(model.codec).requires_grad_(True)
+        print(json.dumps(dict(step=step,reason=reason,mean_train_loss=float(np.mean([r['spectral_loss'] for r in measured if r['trained_id']])))),flush=True)
+    history=run_stages(trainer,spec['milestones'],observe)
+    trainer.save(out/'terminal-checkpoint')
+    report=dict(training_steps=trainer.step,training_seconds=trainer.elapsed,history=history,observations=observations,
+        original_dataset_sha256=data['dataset_sha256'],effective_dataset_sha256=trainer.data_sha256,
+        training_ids=spec['training_ids'],gate_sha256=file_hash(gate_path),spec_sha256=file_hash(path),
+        execution_complete=True,frozen_codec_exact=codec_digest(model.codec)==frozen,
+        voice_similarity_confirmed=False,scope='Three-pair diagnostic; other original train pairs are not new independent test data')
+    (out/'training.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+    return report
+
+
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['roundtrip'])
+    parser.add_argument('command',choices=['roundtrip','train'])
     parser.add_argument('spec');parser.add_argument('destination')
+    parser.add_argument('--gate');parser.add_argument('--roundtrip-report')
     args=parser.parse_args()
-    run_roundtrip(args.spec,args.destination)
+    if args.command=='roundtrip':run_roundtrip(args.spec,args.destination)
+    else:
+        if not args.gate or not args.roundtrip_report:parser.error('training requires the independent gate and roundtrip report')
+        run_small_training(args.spec,args.destination,gate_path=args.gate,roundtrip_report=args.roundtrip_report)

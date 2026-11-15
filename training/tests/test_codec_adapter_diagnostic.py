@@ -78,3 +78,20 @@ def test_roundtrip_inputs_must_match_the_original_three_training_groups(tmp_path
     assert len(validate_roundtrip_inputs(spec,root=tmp_path))==6
     spec['roundtrip'][0]['id']='reference'
     with pytest.raises(ValueError):validate_roundtrip_inputs(spec,root=tmp_path)
+
+
+def test_small_training_requires_complete_hash_bound_independent_codec_gate():
+    from haru_training.codec_adapter_diagnostic import validate_training_gate
+    spec={'training_ids':['a','b','c']}
+    gate=dict(small_training_gate_passed=True,spec_sha256='a'*64,roundtrip_report_sha256='b'*64,
+        cases=[dict(id=name,side=side,status='supported_for_small_training',reasons=[])
+               for name in 'abc' for side in ('source','target')])
+    assert validate_training_gate(spec,gate,spec_sha256='a'*64,report_sha256='b'*64)==gate
+    for mutation in ('failed','wrong_spec','wrong_report','missing','held'):
+        changed=deepcopy(gate)
+        if mutation=='failed':changed['small_training_gate_passed']=False
+        if mutation=='wrong_spec':changed['spec_sha256']='c'*64
+        if mutation=='wrong_report':changed['roundtrip_report_sha256']='c'*64
+        if mutation=='missing':changed['cases'].pop()
+        if mutation=='held':changed['cases'][0]['status']='hold'
+        with pytest.raises(ValueError):validate_training_gate(spec,changed,spec_sha256='a'*64,report_sha256='b'*64)
