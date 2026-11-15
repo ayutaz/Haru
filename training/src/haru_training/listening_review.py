@@ -34,7 +34,8 @@ def make_presentation(cases, *, reference_sha256):
 def assess_review(presentation, responses):
     """Validate every choice and audio identity before interpreting the review."""
     expected=make_presentation(presentation['cases'],reference_sha256=presentation['reference_sha256'])
-    if expected!=presentation or responses.get('version')!=1 or responses.get('presentation_sha256')!=expected['presentation_sha256']:
+    if (expected!=presentation or type(responses.get('version')) is not int
+            or responses['version']!=1 or responses.get('presentation_sha256')!=expected['presentation_sha256']):
         raise ValueError('listening presentation identity differs')
     fields={f['id']:f for f in expected['fields']}
     answers=responses.get('answers')

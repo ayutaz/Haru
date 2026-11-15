@@ -28,7 +28,7 @@ def test_recovered_negative_answers_do_not_become_voice_success():
     assert result['semantic_quality']=='unknown'
 
 
-@pytest.mark.parametrize('mutation',['wrong_page','changed_audio','missing','extra','unanswered','invalid'])
+@pytest.mark.parametrize('mutation',['wrong_page','changed_audio','missing','extra','unanswered','invalid','version'])
 def test_stale_incomplete_or_wrong_audio_answers_are_not_accepted(mutation):
     from haru_training.listening_review import assess_review
     p=protocol(); a=answers(p)
@@ -39,6 +39,7 @@ def test_stale_incomplete_or_wrong_audio_answers_are_not_accepted(mutation):
     if mutation=='extra': a['answers']['unexpected']='聞き取れる'
     if mutation=='unanswered': a['answers'][first]='未確認'
     if mutation=='invalid': a['answers'][first]='perfect'
+    if mutation=='version': a['version']=True
     with pytest.raises(ValueError): assess_review(p,a)
 
 
