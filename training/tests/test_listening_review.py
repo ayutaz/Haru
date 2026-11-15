@@ -67,6 +67,42 @@ def test_slight_relative_gain_and_neither_matching_target_are_recorded_separatel
     assert p['presentation_sha256']!=original['presentation_sha256']
 
 
+def keyed_review():
+    from haru_training.listening_review import make_presentation
+    original=protocol();p=make_presentation(original['cases'],reference_sha256=original['reference_sha256'],include_voice_match=True)
+    a=dict(version=1,presentation_sha256=p['presentation_sha256'],answers={})
+    key=dict(presentation_sha256=p['presentation_sha256'],cases=[])
+    for index,case in enumerate(p['cases']):
+        order=['baseline','candidate'] if index!=1 else ['candidate','baseline']
+        key['cases'].append(dict(id=case['id'],order=order,
+            audio_sha256={side:case['audio_sha256'][label] for label,side in zip(('A','B'),order)}))
+        for label in ('A','B'):a['answers'][case['id']+':'+label+'_content']='聞き取れる'
+        a['answers'][case['id']+':voice']=('B' if index==0 else 'A' if index==1 else '差が分からない')
+        a['answers'][case['id']+':voice_match']='両方似ていない'
+    return p,a,key
+
+
+def test_decode_reports_relative_gain_without_turning_it_into_absolute_identity():
+    from haru_training.listening_review import decode_review
+    p,a,key=keyed_review();report=decode_review(p,a,key)
+    assert report['relative_improvement_count']==2
+    assert report['baseline_preferred_count']==0
+    assert report['candidate_target_match_count']==0
+    assert report['voice_similarity_confirmed'] is False
+    assert report['candidate_adopted'] is False
+
+
+@pytest.mark.parametrize('mutation',['order','page','case','audio'])
+def test_response_decoding_rejects_a_mixed_or_swapped_condition_key(mutation):
+    from haru_training.listening_review import decode_review
+    p,a,key=keyed_review()
+    if mutation=='order':key['cases'][0]['order'].reverse()
+    if mutation=='page':key['presentation_sha256']='f'*64
+    if mutation=='case':key['cases'][0]['id']='other'
+    if mutation=='audio':key['cases'][0]['audio_sha256']['candidate']='f'*64
+    with pytest.raises(ValueError):decode_review(p,a,key)
+
+
 def test_presentation_script_cannot_be_closed_by_case_identifier():
     from haru_training.listening_review import make_presentation, review_controls
     p=make_presentation([{'id':'</script><script>alert(1)</script>', 'audio_sha256':{'A':'b'*64,'B':'c'*64}}],reference_sha256='a'*64)

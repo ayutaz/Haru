@@ -58,6 +58,38 @@ def assess_review(presentation, responses):
         scope='Raw anonymous preferences only; decode the separate condition key for relative candidate comparison.')
 
 
+def decode_review(presentation, responses, condition_key):
+    """Decode independently recorded relative and absolute judgments, never adopt."""
+    result=assess_review(presentation,responses)
+    try:
+        public={c['id']:c for c in presentation['cases']}
+        rows=condition_key['cases']
+        if (condition_key['presentation_sha256']!=presentation['presentation_sha256']
+                or len(rows)!=len(public) or {r['id'] for r in rows}!=set(public)):
+            raise ValueError('condition key belongs to a different presentation')
+        keys={r['id']:r for r in rows}
+        for row in result['cases']:
+            key=keys[row['id']];order=key['order']
+            if len(order)!=2 or set(order)!={'baseline','candidate'}:
+                raise ValueError('invalid anonymous condition order')
+            mapping=dict(zip(('A','B'),order))
+            if any(key['audio_sha256'][side]!=public[row['id']]['audio_sha256'][label]
+                   for label,side in mapping.items()):
+                raise ValueError('condition order and original audio identities differ')
+            row['preferred_condition']=mapping.get(row['voice_preference'])
+            row['content_by_condition']={side:row[label+'_content'] for label,side in mapping.items()}
+            candidate_label=next(label for label,side in mapping.items() if side=='candidate')
+            match=row.get('voice_match')
+            row['candidate_voice_match']=(match in (candidate_label,'両方')) if match in ('A','B','両方','両方似ていない') else None
+        result.update(relative_improvement_count=sum(r['preferred_condition']=='candidate' for r in result['cases']),
+            baseline_preferred_count=sum(r['preferred_condition']=='baseline' for r in result['cases']),
+            candidate_target_match_count=sum(r['candidate_voice_match'] is True for r in result['cases']),
+            absolute_match_unknown_count=sum(r['candidate_voice_match'] is None for r in result['cases']))
+    except (KeyError,TypeError) as error:
+        raise ValueError('incomplete anonymous condition key') from error
+    return result
+
+
 def review_controls(presentation):
     # The spec is public and contains no A/B condition key or automatic scores.
     encoded=json.dumps(presentation,ensure_ascii=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
@@ -118,3 +150,25 @@ REVIEW_RUNTIME = r'''
   });
 })();
 '''
+
+
+def main():
+    import argparse
+    from pathlib import Path
+    parser=argparse.ArgumentParser(description='Validate and decode locally saved listening answers; success does not mean voice quality passed.')
+    parser.add_argument('presentation',type=Path)
+    parser.add_argument('responses',type=Path)
+    parser.add_argument('--answer-key',type=Path,required=True)
+    parser.add_argument('--output',type=Path,required=True)
+    args=parser.parse_args()
+    if args.output.exists():parser.error('do not overwrite a recorded listening result')
+    read=lambda p:json.loads(p.read_text(encoding='utf-8-sig'))
+    result=decode_review(read(args.presentation),read(args.responses),read(args.answer_key))
+    result['input_file_sha256']={key:sha256(path.read_bytes()).hexdigest() for key,path in (
+        ('presentation',args.presentation),('responses',args.responses),('answer_key',args.answer_key))}
+    args.output.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    print(json.dumps({key:result[key] for key in ('relative_improvement_count','candidate_target_match_count','voice_similarity_confirmed')}))
+    return 0
+
+
+if __name__=='__main__':raise SystemExit(main())

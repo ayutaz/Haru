@@ -132,6 +132,7 @@ def write_blind_html(path,reference,*,reference_sha256,seed,reference_info,train
     html+='<h2>本人の参照音声</h2>'+player(reference)
     for label,side in zip(('A','B'),order):html+='<h2>'+label+'</h2>'+player(path/side/'response.wav')
     (path/'answer-key.json').write_text(json.dumps(dict(seed=seed,order=order,
+        audio_sha256={side:_hash(path/side/'response.wav') for side in ('baseline','candidate')},
         reference_sha256=reference_sha256,reference_info=reference_info,
         dataset_input_manifest_sha256=info['dataset_input_manifest_sha256'],
         voice_similarity_confirmed=False)),encoding='utf-8')
