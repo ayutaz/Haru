@@ -16,7 +16,7 @@ class HeadField:
 
 
 def training_losses(model, batch: dict, *, seed: int = 0, condition_dropout: float = .1,
-                    guidance_max: float = 2.) -> dict:
+                    guidance_max: float = 2., hidden: torch.Tensor | None = None) -> dict:
     if not 0 <= condition_dropout < 1 or not 1 <= guidance_max <= 2:
         raise ValueError('condition dropout or guidance is outside its supported range')
     device = model.device
@@ -24,10 +24,18 @@ def training_losses(model, batch: dict, *, seed: int = 0, condition_dropout: flo
     audio_mask = values['audio_loss_mask'] & values['attention_mask']
     if not audio_mask.any():
         raise ValueError('batch has no supervised audio frames')
-    embeddings = model.embed(values['tokens'], values['model_latents'], values['user_latents'],
-                             values['model_mask'], values['user_mask'])
-    hidden = model.lm(inputs_embeds=embeddings, attention_mask=values['attention_mask'],
-                      use_cache=False, return_dict=True).last_hidden_state
+    if hidden is None:
+        embeddings = model.embed(values['tokens'], values['model_latents'], values['user_latents'],
+                                 values['model_mask'], values['user_mask'])
+        hidden = model.lm(inputs_embeds=embeddings, attention_mask=values['attention_mask'],
+                          use_cache=False, return_dict=True).last_hidden_state
+    else:
+        if (any(p.requires_grad for module in (model.lm, model.model_audio_proj, model.user_audio_proj)
+                for p in module.parameters()) or hidden.requires_grad
+                or hidden.shape != (*values['tokens'].shape, model.config.hidden_size)
+                or not torch.isfinite(hidden).all()):
+            raise ValueError('cached conditions require a frozen backbone and matching finite hidden states')
+        hidden = hidden.to(device)
     text_loss = masked_text_loss(model.logits(hidden), values['text_targets'])
     conditions = hidden[audio_mask]
     targets = model.scale_latents(values['audio_targets'][audio_mask])
